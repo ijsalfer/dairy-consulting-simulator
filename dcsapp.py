@@ -236,6 +236,9 @@ else:
 
         if not api_key:
             st.error("⚠️ Gemini API Key not detected. Please add GEMINI_API_KEY to Streamlit Secrets or enter it in the sidebar.")
+        elif not api_key.startswith("AIzaSy"):
+            st.warning("⚠️ **API Key Warning:** Your Gemini API key starts with '" + api_key[:5] + "...', which appears to be a Google Cloud token rather than a standard Gemini API key. Standard Gemini keys start with **AIzaSy...**. If you get a 404 error below, please go to **aistudio.google.com**, click 'Get API key', and choose **'Create API key in NEW project'**.")
+            genai.configure(api_key=api_key)
         else:
             genai.configure(api_key=api_key)
 
@@ -268,7 +271,7 @@ else:
                     user_input
                 )
 
-                # Generate Response via Gemini with Automatic Model Fallback
+                # Generate Response via Gemini
                 try:
                     # Prepare history for Gemini
                     gemini_history = []
@@ -280,17 +283,26 @@ else:
                     if gemini_history and gemini_history[0]["role"] == "model":
                         gemini_history.insert(0, {"role": "user", "parts": ["Hello Mr. Salfer"]})
 
-                    # Candidate model names to cycle through if one model string throws 404
+                    # Candidate models to try
                     model_candidates = [
                         "gemini-1.5-flash",
-                        "gemini-1.5-flash-latest",
+                        "models/gemini-1.5-flash",
                         "gemini-2.0-flash",
+                        "models/gemini-2.0-flash",
                         "gemini-1.5-pro",
-                        "gemini-1.5-flash-001"
+                        "models/gemini-1.5-pro"
                     ]
 
+                    # Attempt dynamic listing if available
+                    try:
+                        listed = [m.name for m in genai.list_models() if 'generateContent' in getattr(m, 'supported_generation_methods', [])]
+                        if listed:
+                            model_candidates = listed + model_candidates
+                    except Exception:
+                        pass
+
                     bot_reply = None
-                    last_error = None
+                    last_err = None
 
                     for candidate in model_candidates:
                         try:
@@ -300,15 +312,15 @@ else:
                             )
                             chat = model.start_chat(history=gemini_history)
                             response = chat.send_message(user_input)
-                            bot_reply = response.text
-                            if bot_reply:
+                            if response and response.text:
+                                bot_reply = response.text
                                 break
                         except Exception as err:
-                            last_error = err
+                            last_err = err
                             continue
 
                     if not bot_reply:
-                        raise last_error if last_error else Exception("Unable to connect to Gemini models.")
+                        raise last_err if last_err else Exception("Could not reach Gemini model.")
 
                     # Append and log bot response
                     st.session_state.messages.append({"role": "assistant", "content": bot_reply})
