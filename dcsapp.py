@@ -2,9 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
-import openai
-import os
-import json
+import google.generativeai as genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -13,39 +11,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- DATABASE INITIALIZATION (SQLite) ---
-DB_FILE = "simulator_data.db"
-
+# --- DATABASE SETUP (TRANSCRIPTS) ---
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
     c = conn.cursor()
-    # Table for student logins
     c.execute('''
-        CREATE TABLE IF NOT EXISTS students (
+        CREATE TABLE IF NOT EXISTS transcripts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            student_id TEXT NOT NULL UNIQUE,
+            student_name TEXT,
+            student_id TEXT,
             section TEXT,
-            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Table for logging chat interactions
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS chat_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_id TEXT NOT NULL,
-            student_name TEXT NOT NULL,
-            farm_scenario TEXT NOT NULL,
-            role TEXT NOT NULL,
-            message TEXT NOT NULL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Table for instructor settings (visibility toggles, scenarios)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
+            farm_name TEXT,
+            timestamp DATETIME,
+            role TEXT,
+            message TEXT
         )
     ''')
     conn.commit()
@@ -53,80 +32,69 @@ def init_db():
 
 init_db()
 
-# --- DATABASE HELPER FUNCTIONS ---
-def register_or_login_student(name, student_id, section):
-    conn = sqlite3.connect(DB_FILE)
+def log_message(student_name, student_id, section, farm_name, role, message):
+    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
     c = conn.cursor()
-    try:
-        c.execute("INSERT OR IGNORE INTO students (name, student_id, section) VALUES (?, ?, ?)",
-                  (name, student_id, section))
-        conn.commit()
-    finally:
-        conn.close()
-
-def log_chat_message(student_id, student_name, farm_scenario, role, message):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO chat_logs (student_id, student_name, farm_scenario, role, message, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (student_id, student_name, farm_scenario, role, message, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute('''
+        INSERT INTO transcripts (student_name, student_id, section, farm_name, timestamp, role, message)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (student_name, student_id, section, farm_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, message))
     conn.commit()
     conn.close()
 
-def get_student_list():
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT DISTINCT student_id, name, section FROM students ORDER BY name ASC", conn)
+def get_transcripts():
+    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
+    df = pd.read_sql_query("SELECT * FROM transcripts ORDER BY timestamp ASC", conn)
     conn.close()
     return df
 
-def get_student_logs(student_id):
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT timestamp, farm_scenario, role, message FROM chat_logs WHERE student_id = ? ORDER BY id ASC", conn, params=(student_id,))
-    conn.close()
-    return df
-
-def get_all_logs_df():
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT timestamp, student_id, student_name, farm_scenario, role, message FROM chat_logs ORDER BY id ASC", conn)
-    conn.close()
-    return df
-
-# --- DEFAULT SCENARIO DATABASE ---
-DEFAULT_FARMS = {
-    "Salfer Dairy (Scenario 1)": {
-        "name": "Salfer Dairy",
-        "location": "Central Minnesota",
-        "owner": "Dan Salfer (Owner-Operator)",
-        "herd_size": "500 lactating Holsteins (100% Holstein)",
-        "facility": "6-row freestall barn, deep-bedded sand stalls, natural curtain ventilation",
-        "milking_system": "Double-12 Parallel Parlor (No robots)",
-        "milking_freq": "3x per day (6:00 AM, 2:00 PM, 10:00 PM)",
-        "economics": {
-            "milk_price": "$20.50 / cwt",
-            "crop_acres": "1,200 acres",
-            "feed_ratio": "75% Grown / 25% Purchased"
-        },
-        "dhia_summary": {
-            "rha": "26,500 lbs Milk",
-            "scc_average": "280,000 cells/mL (Linear Score 2nd+ Lactation > 4.0)",
-            "preg_rate": "15% (Goal: 20%+)",
-            "cull_rate": "34% (Primary reasons: Mastitis & Repro failure)"
-        },
-        "financials": {
-            "gross_revenue": "$2,716,250",
-            "feed_cost": "$1,120,000",
-            "labor_cost": "$280,000",
-            "vet_med_cost": "$62,000",
-            "net_farm_income": "$345,000",
-            "total_assets": "$6,800,000",
-            "total_liabilities": "$2,400,000",
-            "owner_equity": "$4,400,000",
-            "dscr": "1.35"
-        },
-        "persona_prompt": """
-You are Dan Salfer, the owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota.
-You are being interviewed by a student dairy consultant.
+# --- DEFAULT SCENARIO DATA ---
+if "farms" not in st.session_state:
+    st.session_state.farms = {
+        "Salfer Dairy (Scenario 1)": {
+            "name": "Salfer Dairy",
+            "location": "Central Minnesota",
+            "owner": "Dan Salfer (Owner-Operator)",
+            "herd_size": "500 lactating Holsteins (100% Holstein)",
+            "facility": "6-row freestall barn, deep-bedded sand stalls, natural curtain ventilation",
+            "milking_system": "Double-12 Parallel Parlor (No robots)",
+            "milking_freq": "3x per day (6:00 AM, 2:00 PM, 10:00 PM)",
+            "economics": {
+                "milk_price": "$20.50 / cwt",
+                "crop_acres": "1,200 acres",
+                "feed_ratio": "75% Grown / 25% Purchased"
+            },
+            "show_dhia": True,
+            "show_financials": True,
+            "dhia_summary": {
+                "rha": "26,500 lbs Milk",
+                "scc_average": "280,000 cells/mL (Linear Score 2nd+ Lactation > 4.0)",
+                "preg_rate": "15% (Goal: 20%+)",
+                "cull_rate": "34% (Primary reasons: Mastitis & Repro failure)"
+            },
+            "financials": {
+                "income_statement": {
+                    "Gross Milk Revenue": "$2,716,250",
+                    "Cattle Sales": "$185,000",
+                    "Total Revenue": "$2,901,250",
+                    "Feed Costs (Grown & Purchased)": "$1,325,000",
+                    "Labor & Benefits": "$380,000",
+                    "Veterinary & Supplies": "$145,000",
+                    "Net Farm Income": "$312,000"
+                },
+                "balance_sheet": {
+                    "Current Assets": "$450,000",
+                    "Non-Current Assets (Land/Cattle/Machinery)": "$4,800,000",
+                    "Total Liabilities": "$2,100,000",
+                    "Owner Equity": "$3,150,000"
+                },
+                "cash_flow": {
+                    "Operating Cash Flow": "$420,000",
+                    "Annual Debt Service": "$210,000",
+                    "Debt Service Coverage Ratio (DSCR)": "2.0x"
+                }
+            },
+            "persona_prompt": """You are Dan Salfer, the owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota. You are being interviewed by a student dairy consultant.
 
 YOUR PERSONALITY & DEMEANOR:
 - Proud, hardworking, practical, and deeply committed to your herd.
@@ -143,279 +111,240 @@ HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SOCRATIC QUESTION
 RULES FOR INTERACTION:
 - Stay strictly in character at all times. Do NOT break character.
 - Do NOT volunteer the hidden root causes right away. The student MUST earn the information by asking specific, respectful, diagnostic questions about routines, schedules, and labor.
-- Keep responses conversational, natural, and realistic for a busy dairy farmer (2 to 4 sentences per response).
-"""
+- Keep responses conversational, natural, and realistic for a busy dairy farmer (2 to 4 sentences per response)."""
+        }
     }
-}
-
-# Session state initialization for settings
-if "show_dhia" not in st.session_state:
-    st.session_state.show_dhia = True
-if "show_financials" not in st.session_state:
-    st.session_state.show_financials = True
-if "is_instructor" not in st.session_state:
-    st.session_state.is_instructor = False
-if "student_user" not in st.session_state:
-    st.session_state.student_user = None
 
 # --- HEADER ---
 st.title("🐄 Dairy Consulting Interview Simulator")
-st.markdown("*Practice Socratic interviewing, diagnostic investigation, and herd evaluation with simulated farm managers.*")
+st.caption("Powered by Google Gemini | University Dairy Consulting Program")
 
-# --- SIDEBAR: AUTHENTICATION & INSTRUCTOR CONTROLS ---
-st.sidebar.header("⚙️ Navigation & Settings")
+# --- SIDEBAR & AUTHENTICATION ---
+st.sidebar.header("🔑 Student Authentication")
 
-# Instructor Login Section
-with st.sidebar.expander("🔒 Instructor Login", expanded=False):
-    admin_password = st.text_input("Instructor Password:", type="password", key="pwd_input")
-    if st.button("Login as Instructor"):
-        if admin_password == "dairy123":
-            st.session_state.is_instructor = True
-            st.success("Authenticated as Instructor!")
-        else:
-            st.error("Incorrect Password.")
+if "student_info" not in st.session_state:
+    st.session_state.student_info = None
 
-if st.session_state.is_instructor:
-    st.sidebar.success("🟢 Logged in as Instructor")
-    if st.sidebar.button("Logout Instructor"):
-        st.session_state.is_instructor = False
+if st.session_state.student_info is None:
+    with st.sidebar.form("student_login_form"):
+        st.subheader("Sign In to Begin")
+        s_name = st.text_input("Full Name:")
+        s_id = st.text_input("Student ID:")
+        s_section = st.text_input("Class Section:", value="ANSC 401 - Fall")
+        submit_login = st.form_submit_button("Sign In")
+        
+        if submit_login and s_name and s_id:
+            st.session_state.student_info = {
+                "name": s_name,
+                "id": s_id,
+                "section": s_section
+            }
+            st.sidebar.success(f"Welcome, {s_name}!")
+            st.rerun()
+
+else:
+    st.sidebar.success(f"👤 **Student:** {st.session_state.student_info['name']}")
+    st.sidebar.info(f"🆔 **ID:** {st.session_state.student_info['id']} | **Section:** {st.session_state.student_info['section']}")
+    if st.sidebar.button("Sign Out"):
+        st.session_state.student_info = None
+        st.session_state.messages = []
         st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("API Configuration")
-api_key = st.sidebar.text_input("OpenAI API Key:", type="password", help="Enter OpenAI API key for live AI conversations.")
 
-# --- STUDENT REGISTRATION / SIGN-IN SCREEN ---
-if not st.session_state.student_user and not st.session_state.is_instructor:
-    st.info("👋 **Welcome Students!** Please sign in below before starting your consulting simulation.")
-    
-    with st.form("student_signin_form"):
-        st.subheader("Student Sign-In / Account Creation")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            s_name = st.text_input("Full Name (First & Last):")
-            s_id = st.text_input("Student ID Number:")
-        with col_b:
-            s_section = st.text_input("Class Section / Semester (e.g., ANSC 401 - Fall):")
-        
-        submit_btn = st.form_submit_button("Start Interview Simulation")
-        
-        if submit_btn:
-            if s_name and s_id:
-                register_or_login_student(s_name, s_id, s_section)
-                st.session_state.student_user = {
-                    "name": s_name,
-                    "id": s_id,
-                    "section": s_section
-                }
-                st.success(f"Welcome, {s_name}! Loading simulation...")
-                st.rerun()
-            else:
-                st.error("Please provide both your Name and Student ID Number.")
+# API KEY HANDLING (SECRETS OR SIDEBAR FALLBACK)
+api_key = None
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = st.sidebar.text_input("Gemini API Key (Fallback):", type="password", help="Entered automatically if configured in Streamlit Secrets.")
 
-# --- MAIN SIMULATOR INTERFACE (AFTER STUDENT SIGN-IN OR INSTRUCTOR LOGIN) ---
-if st.session_state.student_user or st.session_state.is_instructor:
-    
-    # Header Banner showing logged in status
-    if st.session_state.student_user:
-        st.sidebar.markdown(f"👤 **Student:** {st.session_state.student_user['name']}")
-        st.sidebar.markdown(f"🆔 **ID:** {st.session_state.student_user['id']}")
-        if st.sidebar.button("Sign Out Student"):
-            st.session_state.student_user = None
-            st.session_state.messages = []
-            st.rerun()
+# SCENARIO SELECTOR
+selected_farm_key = st.sidebar.selectbox("Select Farm Scenario:", list(st.session_state.farms.keys()))
+farm_data = st.session_state.farms[selected_farm_key]
 
-    # Scenario Selection
-    st.sidebar.subheader("Farm Selection")
-    selected_farm_key = st.sidebar.selectbox("Select Farm Scenario:", list(DEFAULT_FARMS.keys()))
-    farm_data = DEFAULT_FARMS[selected_farm_key]
-
-    # --- TAB NAVIGATION ---
+# --- MAIN APP BODY ---
+if st.session_state.student_info is None:
+    st.info("👈 Please sign in using the sidebar on the left to access the farm records and start your producer interview.")
+else:
+    # Build Tabs dynamically based on instructor settings
     tab_list = []
-    if st.session_state.show_dhia or st.session_state.is_instructor:
-        tab_list.append("📊 DHIA 302 Herd Summary")
-    if st.session_state.show_financials or st.session_state.is_instructor:
-        tab_list.append("📈 Financial Statements")
-    
+    if farm_data["show_dhia"]:
+        tab_list.append("📊 DHIA 302 Summary")
+    if farm_data["show_financials"]:
+        tab_list.append("💰 Financial Statements")
     tab_list.append("💬 Producer Interview Chat")
-    
-    if st.session_state.is_instructor:
-        tab_list.append("🔒 Instructor Admin Panel")
+    tab_list.append("🔒 Instructor Admin")
 
     tabs = st.tabs(tab_list)
     tab_idx = 0
 
-    # TAB: DHIA 302 REPORT
-    if st.session_state.show_dhia or st.session_state.is_instructor:
+    # TAB: DHIA 302
+    if farm_data["show_dhia"]:
         with tabs[tab_idx]:
             st.header(f"DHIA 302 Herd Summary: {farm_data['name']}")
-            if not st.session_state.show_dhia and st.session_state.is_instructor:
-                st.warning("⚠️ Note: This tab is currently HIDDEN from students.")
-                
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("📍 Facility & Operational Profile")
+                st.subheader("📍 Facility & Operational Overview")
                 st.write(f"**Location:** {farm_data['location']}")
                 st.write(f"**Management:** {farm_data['owner']}")
                 st.write(f"**Herd Size & Breed:** {farm_data['herd_size']}")
                 st.write(f"**Housing:** {farm_data['facility']}")
                 st.write(f"**Milking Setup:** {farm_data['milking_system']}")
                 st.write(f"**Milking Frequency:** {farm_data['milking_freq']}")
-                
             with col2:
-                st.subheader("🌾 Economics & Land")
-                st.write(f"**Current Milk Price:** {farm_data['economics']['milk_price']}")
-                st.write(f"**Cropland:** {farm_data['economics']['crop_acres']}")
-                st.write(f"**Feed Share:** {farm_data['economics']['feed_ratio']}")
-                
-                st.subheader("📈 Key DHIA Metrics")
+                st.subheader("📈 Key Herd Performance Indicators")
                 st.write(f"**Rolling Herd Average (RHA):** {farm_data['dhia_summary']['rha']}")
                 st.write(f"**Bulk Tank SCC:** {farm_data['dhia_summary']['scc_average']}")
                 st.write(f"**Pregnancy Rate:** {farm_data['dhia_summary']['preg_rate']}")
                 st.write(f"**Cull Rate:** {farm_data['dhia_summary']['cull_rate']}")
+                st.write(f"**Milk Price / Land:** {farm_data['economics']['milk_price']} | {farm_data['economics']['crop_acres']}")
         tab_idx += 1
 
     # TAB: FINANCIAL STATEMENTS
-    if st.session_state.show_financials or st.session_state.is_instructor:
+    if farm_data["show_financials"]:
         with tabs[tab_idx]:
             st.header(f"Financial Statements: {farm_data['name']}")
-            if not st.session_state.show_financials and st.session_state.is_instructor:
-                st.warning("⚠️ Note: This tab is currently HIDDEN from students.")
-                
-            fin = farm_data["financials"]
-            col_inc, col_bal, col_cash = st.columns(3)
+            f_col1, f_col2, f_col3 = st.columns(3)
             
-            with col_inc:
-                st.subheader("💵 Income Statement (Annual)")
-                st.write(f"**Gross Milk Revenue:** {fin['gross_revenue']}")
-                st.write(f"**Total Feed Expense:** {fin['feed_cost']}")
-                st.write(f"**Hired Labor Expense:** {fin['labor_cost']}")
-                st.write(f"**Veterinary & Supplies:** {fin['vet_med_cost']}")
-                st.markdown("---")
-                st.write(f"**Net Farm Income:** {fin['net_farm_income']}")
+            with f_col1:
+                st.subheader("📄 Income Statement")
+                for k, v in farm_data["financials"]["income_statement"].items():
+                    st.write(f"**{k}:** {v}")
+                    
+            with f_col2:
+                st.subheader("⚖️ Balance Sheet")
+                for k, v in farm_data["financials"]["balance_sheet"].items():
+                    st.write(f"**{k}:** {v}")
 
-            with col_bal:
-                st.subheader("🏛️ Balance Sheet")
-                st.write(f"**Total Farm Assets:** {fin['total_assets']}")
-                st.write(f"**Total Liabilities:** {fin['total_liabilities']}")
-                st.markdown("---")
-                st.write(f"**Owner Equity:** {fin['owner_equity']}")
-
-            with col_cash:
-                st.subheader("🔄 Cash Flow & Ratios")
-                st.write(f"**Debt Service Coverage Ratio (DSCR):** {fin['dscr']}")
-                st.caption("A DSCR above 1.25 indicates healthy debt servicing capability.")
+            with f_col3:
+                st.subheader("💵 Cash Flow")
+                for k, v in farm_data["financials"]["cash_flow"].items():
+                    st.write(f"**{k}:** {v}")
         tab_idx += 1
 
-    # TAB: PRODUCER INTERVIEW CHAT
+    # TAB: CHAT INTERFACE
     with tabs[tab_idx]:
-        st.header(f"Interview with {farm_data['owner'].split(' ')[0]} Salfer ({farm_data['name']})")
-        st.caption("Ask open-ended, Socratic questions to investigate farm operations, labor routines, and herd health.")
+        st.header(f"Interview with {farm_data['owner'].split(' ')[0]} ({farm_data['name']})")
+        
+        # Display notice if reports are locked by instructor
+        hidden_reports = []
+        if not farm_data["show_dhia"]: hidden_reports.append("DHIA 302 Summary")
+        if not farm_data["show_financials"]: hidden_reports.append("Financial Statements")
+        if hidden_reports:
+            st.warning(f"🔒 Note: The following reports are withheld by the producer: {', '.join(hidden_reports)}. You must ask permission during your interview to view them.")
 
         if not api_key:
-            st.warning("⚠️ Please enter an OpenAI API Key in the sidebar to begin the conversation.")
+            st.error("⚠️ Gemini API Key not detected. Please add GEMINI_API_KEY to Streamlit Secrets or enter it in the sidebar.")
         else:
-            openai.api_key = api_key
+            genai.configure(api_key=api_key)
 
-            # Initialize Chat Session
+            # Initialize Chat History
             if "messages" not in st.session_state:
                 st.session_state.messages = [
-                    {"role": "system", "content": farm_data["persona_prompt"]},
-                    {"role": "assistant", "content": f"Hello there. I'm Dan Salfer. Thanks for stopping by {farm_data['name']}. What questions do you have for me today?"}
+                    {"role": "assistant", "content": f"Hello there. I'm Dan Salfer. Thanks for coming out to {farm_data['name']}. What can I help you with today?"}
                 ]
 
             # Display Chat History
             for msg in st.session_state.messages:
-                if msg["role"] != "system":
-                    avatar = "👨‍🌾" if msg["role"] == "assistant" else "🎓"
-                    with st.chat_message(msg["role"], avatar=avatar):
-                        st.write(msg["content"])
+                avatar = "👨‍🌾" if msg["role"] == "assistant" else "🎓"
+                with st.chat_message(msg["role"], avatar=avatar):
+                    st.write(msg["content"])
 
             # Chat Input
-            if user_input := st.chat_input("Ask Mr. Salfer a diagnostic question..."):
-                # Append user message
+            if user_input := st.chat_input("Ask a diagnostic question..."):
+                # Append and display user input
                 st.session_state.messages.append({"role": "user", "content": user_input})
                 with st.chat_message("user", avatar="🎓"):
                     st.write(user_input)
 
-                # Log student question to DB
-                st_id = st.session_state.student_user['id'] if st.session_state.student_user else "INSTRUCTOR_TEST"
-                st_name = st.session_state.student_user['name'] if st.session_state.student_user else "Instructor"
-                log_chat_message(st_id, st_name, selected_farm_key, "Student", user_input)
+                # Log user query to SQLite
+                log_message(
+                    st.session_state.student_info["name"],
+                    st.session_state.student_info["id"],
+                    st.session_state.student_info["section"],
+                    farm_data["name"],
+                    "Student",
+                    user_input
+                )
 
-                # Generate AI Response
+                # Generate Response via Gemini
                 try:
-                    client = openai.OpenAI(api_key=api_key)
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=st.session_state.messages,
-                        temperature=0.7
+                    # Prepare history for Gemini
+                    gemini_history = []
+                    for m in st.session_state.messages[:-1]:
+                        role = "user" if m["role"] == "user" else "model"
+                        gemini_history.append({"role": role, "parts": [m["content"]]})
+
+                    # If history starts with model greeting, prepend dummy user prompt to satisfy Gemini API structure
+                    if gemini_history and gemini_history[0]["role"] == "model":
+                        gemini_history.insert(0, {"role": "user", "parts": ["Hello Mr. Salfer"]})
+
+                    model = genai.GenerativeModel(
+                        model_name="gemini-1.5-flash",
+                        system_instruction=farm_data["persona_prompt"]
                     )
-                    bot_reply = response.choices[0].message.content
-                    st.session_state.messages.append({"role": "assistant", "content": bot_reply})
                     
+                    chat = model.start_chat(history=gemini_history)
+                    response = chat.send_message(user_input)
+                    bot_reply = response.text
+
+                    # Append and log bot response
+                    st.session_state.messages.append({"role": "assistant", "content": bot_reply})
                     with st.chat_message("assistant", avatar="👨‍🌾"):
                         st.write(bot_reply)
 
-                    # Log producer reply to DB
-                    log_chat_message(st_id, st_name, selected_farm_key, "Producer (AI)", bot_reply)
+                    log_message(
+                        st.session_state.student_info["name"],
+                        st.session_state.student_info["id"],
+                        st.session_state.student_info["section"],
+                        farm_data["name"],
+                        "Producer (Dan Salfer)",
+                        bot_reply
+                    )
 
                 except Exception as e:
-                    st.error(f"Error connecting to AI model: {e}")
+                    st.error(f"Error connecting to Gemini API: {e}")
+
     tab_idx += 1
 
     # TAB: INSTRUCTOR ADMIN PANEL
-    if st.session_state.is_instructor:
-        with tabs[tab_idx]:
-            st.header("🔒 Instructor Control & Student Interaction Logs")
+    with tabs[tab_idx]:
+        st.header("🔒 Instructor Admin & Evaluation Panel")
+        admin_pass = st.text_input("Enter Instructor Password:", type="password")
+        
+        if admin_pass == "dairy123":
+            st.success("Authenticated as Instructor")
             
-            admin_sub1, admin_sub2 = st.tabs(["📋 Student Interaction Transcripts", "⚙️ Visibility & Scenario Settings"])
+            admin_tab1, admin_tab2 = st.tabs(["📑 Report Visibility Controls", "📋 Student Transcripts"])
             
-            # SUBTAB 1: STUDENT TRANSCRIPTS & LOGS
-            with admin_sub1:
-                st.subheader("Student Chat Logs & Evaluation")
+            with admin_tab1:
+                st.subheader("Manage Document Visibility for Selected Farm")
+                farm_data["show_dhia"] = st.checkbox("Show DHIA 302 Summary to Students", value=farm_data["show_dhia"])
+                farm_data["show_financials"] = st.checkbox("Show Financial Statements to Students", value=farm_data["show_financials"])
+                st.info("Changes apply immediately to the current student session.")
+
+            with admin_tab2:
+                st.subheader("Student Interaction Logs")
+                df_logs = get_transcripts()
                 
-                students_df = get_student_list()
-                if students_df.empty:
+                if df_logs.empty:
                     st.info("No student interactions recorded yet.")
                 else:
-                    st.write(f"Total Enrolled/Interacting Students: **{len(students_df)}**")
+                    # Filter by student
+                    students = df_logs["student_name"].unique()
+                    selected_student = st.selectbox("Select Student to Evaluate:", students)
                     
-                    student_options = [f"{row['name']} (ID: {row['student_id']}) - {row['section']}" for _, row in students_df.iterrows()]
-                    selected_student_str = st.selectbox("Select Student to Evaluate:", student_options)
+                    student_df = df_logs[df_logs["student_name"] == selected_student]
+                    st.dataframe(student_df[["timestamp", "role", "message"]], use_container_width=True)
                     
-                    if selected_student_str:
-                        selected_id = selected_student_str.split("ID: ")[1].split(")")[0]
-                        logs_df = get_student_logs(selected_id)
-                        
-                        st.markdown(f"### Chat Transcript for Student ID: `{selected_id}`")
-                        
-                        if logs_df.empty:
-                            st.write("No messages recorded for this student yet.")
-                        else:
-                            for _, log_row in logs_df.iterrows():
-                                role_icon = "🎓 **Student**" if log_row['role'] == "Student" else "👨‍🌾 **Producer**"
-                                st.markdown(f"**[{log_row['timestamp']}] {role_icon}:** {log_row['message']}")
-                                st.divider()
-                                
-                    st.markdown("---")
-                    st.subheader("📥 Export Complete Class Data")
-                    all_logs_df = get_all_logs_df()
-                    if not all_logs_df.empty:
-                        csv_data = all_logs_df.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="Download All Student Chat Logs (CSV)",
-                            data=csv_data,
-                            file_name=f"dairy_consulting_student_logs_{datetime.now().strftime('%Y%m%d')}.csv",
-                            mime="text/csv"
-                        )
-
-            # SUBTAB 2: REPORT VISIBILITY TOGGLES
-            with admin_sub2:
-                st.subheader("Document Visibility Controls")
-                st.caption("Toggle which reports are visible to students for diagnostic evaluation.")
-                
-                st.session_state.show_dhia = st.checkbox("Show DHIA 302 Herd Summary to Students", value=st.session_state.show_dhia)
-                st.session_state.show_financials = st.checkbox("Show Financial Statements to Students", value=st.session_state.show_financials)
-                
-                st.success("Settings updated dynamically!")
+                    # CSV Export Button
+                    csv_data = df_logs.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download All Student Transcripts (CSV)",
+                        data=csv_data,
+                        file_name="dairy_consulting_student_transcripts.csv",
+                        mime="text/csv"
+                    )
+        elif admin_pass:
+            st.error("Incorrect Password.")
