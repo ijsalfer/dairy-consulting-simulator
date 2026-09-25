@@ -268,7 +268,7 @@ else:
                     user_input
                 )
 
-                # Generate Response via Gemini
+                # Generate Response via Gemini with Automatic Model Fallback
                 try:
                     # Prepare history for Gemini
                     gemini_history = []
@@ -280,14 +280,35 @@ else:
                     if gemini_history and gemini_history[0]["role"] == "model":
                         gemini_history.insert(0, {"role": "user", "parts": ["Hello Mr. Salfer"]})
 
-                    model = genai.GenerativeModel(
-                        model_name="gemini-1.5-flash",
-                        system_instruction=farm_data["persona_prompt"]
-                    )
-                    
-                    chat = model.start_chat(history=gemini_history)
-                    response = chat.send_message(user_input)
-                    bot_reply = response.text
+                    # Candidate model names to cycle through if one model string throws 404
+                    model_candidates = [
+                        "gemini-1.5-flash",
+                        "gemini-1.5-flash-latest",
+                        "gemini-2.0-flash",
+                        "gemini-1.5-pro",
+                        "gemini-1.5-flash-001"
+                    ]
+
+                    bot_reply = None
+                    last_error = None
+
+                    for candidate in model_candidates:
+                        try:
+                            model = genai.GenerativeModel(
+                                model_name=candidate,
+                                system_instruction=farm_data["persona_prompt"]
+                            )
+                            chat = model.start_chat(history=gemini_history)
+                            response = chat.send_message(user_input)
+                            bot_reply = response.text
+                            if bot_reply:
+                                break
+                        except Exception as err:
+                            last_error = err
+                            continue
+
+                    if not bot_reply:
+                        raise last_error if last_error else Exception("Unable to connect to Gemini models.")
 
                     # Append and log bot response
                     st.session_state.messages.append({"role": "assistant", "content": bot_reply})
@@ -304,7 +325,7 @@ else:
                     )
 
                 except Exception as e:
-                    st.error(f"Error connecting to Gemini API: {e}")
+                    st.error(f"Error connecting to Gemini API: {e}\n\n💡 Tip: Verify your key was created at https://aistudio.google.com and entered into Streamlit Secrets.")
 
     tab_idx += 1
 
