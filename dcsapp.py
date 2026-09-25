@@ -48,6 +48,34 @@ def get_transcripts():
     conn.close()
     return df
 
+def clean_bot_reply(raw_text):
+    if not raw_text:
+        return raw_text
+    
+    lines = raw_text.strip().split('\n')
+    filtered = []
+    meta_prefixes = ("user:", "goal:", "salfer is", "keep it", "focus on", "current question:", "persona:", "character:", "objective:")
+    
+    for line in lines:
+        l_lower = line.strip().lower()
+        if any(l_lower.startswith(p) for p in meta_prefixes):
+            continue
+        filtered.append(line)
+    
+    cleaned = "\n".join(filtered).strip()
+    
+    # If meta-text was filtered out, check if a quoted string remains
+    import re
+    quoted_matches = re.findall(r'"([^"]{10,})"', raw_text)
+    if quoted_matches and len(cleaned) > len(quoted_matches[-1]) + 15:
+        cleaned = quoted_matches[-1].strip()
+
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+        
+    return cleaned if cleaned else raw_text.strip()
+
+
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
     st.session_state.farms = {
@@ -108,10 +136,12 @@ HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SOCRATIC QUESTION
 2. Reproduction Issue:
    - If asked how crop work aligns with herd health schedules: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24-48 hours because you are in the tractor all day.
 
-RULES FOR INTERACTION:
-- Stay strictly in character at all times. Do NOT break character.
-- Do NOT volunteer the hidden root causes right away. The student MUST earn the information by asking specific, respectful, diagnostic questions about routines, schedules, and labor.
-- Keep responses conversational, natural, and realistic for a busy dairy farmer (2 to 4 sentences per response)."""
+CRITICAL OUTPUT FORMATTING INSTRUCTIONS (STRICT):
+- Respond ONLY with the exact spoken words of Dan Salfer.
+- Do NOT include internal monologue, planning notes, character analysis, labels (e.g., 'User:', 'Goal:', 'Dan:'), or bulleted summaries.
+- Do NOT wrap your spoken response in quotation marks.
+- Speak in plain, casual, natural conversational English, as if talking directly to a visitor on your farm or texting a colleague.
+- Keep responses concise: 2 to 4 sentences max."""
         }
     }
 
@@ -310,7 +340,7 @@ else:
                             chat = model.start_chat(history=gemini_history)
                             response = chat.send_message(user_input)
                             if response and response.text:
-                                bot_reply = response.text
+                                bot_reply = clean_bot_reply(response.text)
                                 break
                         except Exception as err:
                             last_err = err
