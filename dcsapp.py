@@ -236,9 +236,6 @@ else:
 
         if not api_key:
             st.error("⚠️ Gemini API Key not detected. Please add GEMINI_API_KEY to Streamlit Secrets or enter it in the sidebar.")
-        elif not api_key.startswith("AIzaSy"):
-            st.warning("⚠️ **API Key Warning:** Your Gemini API key starts with '" + api_key[:5] + "...', which appears to be a Google Cloud token rather than a standard Gemini API key. Standard Gemini keys start with **AIzaSy...**. If you get a 404 error below, please go to **aistudio.google.com**, click 'Get API key', and choose **'Create API key in NEW project'**.")
-            genai.configure(api_key=api_key)
         else:
             genai.configure(api_key=api_key)
 
@@ -297,7 +294,7 @@ else:
                     try:
                         listed = [m.name for m in genai.list_models() if 'generateContent' in getattr(m, 'supported_generation_methods', [])]
                         if listed:
-                            model_candidates = listed + model_candidates
+                            model_candidates = list(dict.fromkeys(listed + model_candidates))
                     except Exception:
                         pass
 
@@ -320,7 +317,7 @@ else:
                             continue
 
                     if not bot_reply:
-                        raise last_err if last_err else Exception("Could not reach Gemini model.")
+                        raise last_err if last_err else Exception("Unable to connect to Gemini API models.")
 
                     # Append and log bot response
                     st.session_state.messages.append({"role": "assistant", "content": bot_reply})
@@ -337,7 +334,7 @@ else:
                     )
 
                 except Exception as e:
-                    st.error(f"Error connecting to Gemini API: {e}\n\n💡 Tip: Verify your key was created at https://aistudio.google.com and entered into Streamlit Secrets.")
+                    st.error(f"Error connecting to Gemini API: {e}")
 
     tab_idx += 1
 
