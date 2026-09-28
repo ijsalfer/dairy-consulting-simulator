@@ -3,7 +3,6 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import re
-import textwrap
 import google.generativeai as genai
 
 # --- PAGE CONFIGURATION ---
@@ -15,17 +14,16 @@ st.set_page_config(
 
 # ==============================================================================
 # 🔑 PERMANENT GEMINI API KEY CONFIGURATION
-# Paste your Gemini API key (starts with AIzaSy...) below to hardcode it permanently.
-# Leave empty ("") if using Streamlit Secrets or sidebar entry.
+# Set your AIzaSy... API key here if you want it hardcoded. Leave empty otherwise.
 # ==============================================================================
 HARDCODED_GEMINI_API_KEY = ""
 
 # --- DATABASE SETUP (TRANSCRIPTS) ---
 def init_db():
-    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transcripts (
+    try:
+        conn = sqlite3.connect('transcripts.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS transcripts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_name TEXT,
             student_id TEXT,
@@ -35,12 +33,10 @@ def init_db():
             timestamp DATETIME,
             role TEXT,
             message TEXT
-        )
-    ''')
-    conn.commit()
-    
-    # Auto-migrate existing database tables created under previous schemas
-    try:
+        )''')
+        conn.commit()
+        
+        # Auto-migrate columns if table exists from old schema
         c.execute('PRAGMA table_info(transcripts)')
         existing_cols = [row[1] for row in c.fetchall()]
         if 'course' not in existing_cols:
@@ -49,10 +45,9 @@ def init_db():
         if 'semester' not in existing_cols:
             c.execute('ALTER TABLE transcripts ADD COLUMN semester TEXT DEFAULT "Spring 2027"')
             conn.commit()
-    except Exception as err:
-        print(f"Database migration note: {err}")
-    finally:
         conn.close()
+    except Exception as e:
+        print(f"Database init note: {e}")
 
 init_db()
 
@@ -60,20 +55,21 @@ def log_message(student_name, student_id, course, semester, farm_name, role, mes
     try:
         conn = sqlite3.connect('transcripts.db', check_same_thread=False)
         c = conn.cursor()
-        c.execute('''
-            INSERT INTO transcripts (student_name, student_id, course, semester, farm_name, timestamp, role, message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (student_name, student_id, course, semester, farm_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, message))
+        c.execute('''INSERT INTO transcripts (student_name, student_id, course, semester, farm_name, timestamp, role, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (student_name, student_id, course, semester, farm_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, message))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Transcript logging exception caught: {e}")
+        print(f"Logging exception: {e}")
 
 def get_transcripts():
-    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
-    df = pd.read_sql_query("SELECT * FROM transcripts ORDER BY timestamp ASC", conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect('transcripts.db', check_same_thread=False)
+        df = pd.read_sql_query("SELECT * FROM transcripts ORDER BY timestamp ASC", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 # --- HELPER FUNCTION: BOT REPLY SANITIZER ---
 def sanitize_bot_reply(reply_text, user_prompt=""):
@@ -81,13 +77,10 @@ def sanitize_bot_reply(reply_text, user_prompt=""):
         return "I'm doing alright, just staying busy between the cows and the 1,200 acres. What can I help you with today?"
     
     text = reply_text.strip()
-    
-    # Look for 'Perfect.' or 'Final Answer:' marker
     match_perfect = re.search(r'(?:Perfect\.|Final Answer:)\s*(.*)$', text, re.DOTALL | re.IGNORECASE)
     if match_perfect and len(match_perfect.group(1).strip()) > 10:
         text = match_perfect.group(1).strip()
     else:
-        # Filter out lines containing meta/planning keywords
         paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         filtered = []
         for p in paragraphs:
@@ -97,12 +90,10 @@ def sanitize_bot_reply(reply_text, user_prompt=""):
         if filtered:
             text = " ".join(filtered)
             
-    # Clean up markdown headers or outer quotes
     text = re.sub(r'^#+\s*', '', text)
     if text.startswith('"') and text.endswith('"') and len(text) > 2:
         text = text[1:-1].strip()
         
-    # Strip verbatim question echo
     if user_prompt and text.lower().startswith(user_prompt.lower()):
         text = text[len(user_prompt):].strip()
         if text.startswith("?") or text.startswith(":"):
@@ -112,252 +103,6 @@ def sanitize_bot_reply(reply_text, user_prompt=""):
         text = "I'm doing alright, just staying busy between the cows and the 1,200 acres. Main thing is keeping the place profitable."
         
     return text
-
-# --- STYLED HTML TABLE GENERATORS (DEDENTED TO PREVENT MARKDOWN CODE BLOCKS) ---
-def render_income_statement(inc_data):
-    html = """<style>
-.fin-table { width: 100%; border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1e293b; margin-bottom: 25px; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; }
-.fin-table th { background-color: #0f172a; color: #ffffff; font-weight: 600; text-align: right; padding: 10px 14px; border-bottom: 2px solid #0284c7; }
-.fin-table th:first-child { text-align: left; }
-.fin-table td { padding: 8px 14px; border-bottom: 1px solid #f1f5f9; text-align: right; }
-.fin-table td:first-child { text-align: left; }
-.fin-sec-header { background-color: #f8fafc; font-weight: 700; color: #0f172a; border-top: 1px solid #cbd5e1; text-transform: uppercase; font-size: 13px; letter-spacing: 0.5px; }
-.fin-indent { padding-left: 28px !important; color: #334155; }
-.fin-total { font-weight: 700; background-color: #f1f5f9; border-top: 1px solid #94a3b8; border-bottom: 2px solid #475569; color: #0f172a; }
-.fin-grand-total { font-weight: 800; background-color: #e0f2fe; color: #0369a1; border-top: 2px solid #0284c7; border-bottom: 3px double #0284c7; font-size: 15px; }
-</style>
-<table class="fin-table">
-    <thead>
-        <tr>
-            <th>Line Item</th>
-            <th>2018 (Prior Year)</th>
-            <th>2019 (Current Year)</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr class="fin-sec-header"><td colspan="3">Farm Revenues</td></tr>
-        <tr><td class="fin-indent">Milk Sales</td><td>$14,280,300</td><td>$14,000,000</td></tr>
-        <tr><td class="fin-indent">Raised Calf, Cow, & Cull Sales</td><td>$596,000</td><td>$485,000</td></tr>
-        <tr><td class="fin-indent">Other Dairy Revenues</td><td>$350,000</td><td>$515,000</td></tr>
-        <tr><td class="fin-indent">Non-Dairy Farm Revenues</td><td>$0</td><td>$0</td></tr>
-        <tr class="fin-total"><td>Gross Income (Line F)</td><td>$15,226,300</td><td>$15,000,000</td></tr>
-
-        <tr class="fin-sec-header"><td colspan="3">Dairy-Specific Operating Expenses</td></tr>
-        <tr><td class="fin-indent">Bedding</td><td>$258,400</td><td>$264,000</td></tr>
-        <tr><td class="fin-indent">Chemicals</td><td>$247,100</td><td>$53,000</td></tr>
-        <tr><td class="fin-indent">Contract Heifer Raising</td><td>$783,000</td><td>$793,600</td></tr>
-        <tr><td class="fin-indent">Purchased Feed Expense</td><td>$3,671,000</td><td>$3,744,000</td></tr>
-        <tr><td class="fin-indent">Homegrown Feed Expenses</td><td>$2,643,500</td><td>$2,726,500</td></tr>
-        <tr><td class="fin-indent">Fuel & Oil</td><td>$70,000</td><td>$60,600</td></tr>
-        <tr><td class="fin-indent">Insurance</td><td>$151,300</td><td>$168,000</td></tr>
-        <tr><td class="fin-indent">Labor (Wages, Payroll)</td><td>$1,737,200</td><td>$1,832,900</td></tr>
-        <tr><td class="fin-indent">Milk Marketing (Hauling, Promotion)</td><td>$379,100</td><td>$385,000</td></tr>
-        <tr><td class="fin-indent">Rent/Lease (Land & Equipment)</td><td>$549,500</td><td>$612,800</td></tr>
-        <tr><td class="fin-indent">Repairs (Building & Equipment)</td><td>$101,500</td><td>$125,000</td></tr>
-        <tr><td class="fin-indent">Supplies</td><td>$285,500</td><td>$309,000</td></tr>
-        <tr><td class="fin-indent">Utilities</td><td>$696,800</td><td>$710,700</td></tr>
-        <tr><td class="fin-indent">Veterinary, Medicine & Breeding</td><td>$421,400</td><td>$444,500</td></tr>
-        <tr><td class="fin-indent">Other/Misc. Dairy Expenses</td><td>$520,600</td><td>$522,400</td></tr>
-
-        <tr class="fin-sec-header"><td colspan="3">Non-Dairy-Specific Farm Expenses</td></tr>
-        <tr><td class="fin-indent">Interest</td><td>$186,400</td><td>$200,000</td></tr>
-        <tr><td class="fin-indent">Property Taxes</td><td>$41,100</td><td>$43,000</td></tr>
-        <tr><td class="fin-indent">Depreciation (excl. Sec 179)</td><td>$388,600</td><td>$385,000</td></tr>
-        <tr><td class="fin-indent">All Other Farm Expenses</td><td>$0</td><td>$120,000</td></tr>
-        <tr class="fin-total"><td>Total Farm Expenses (Line I)</td><td>$13,132,000</td><td>$13,500,000</td></tr>
-
-        <tr class="fin-grand-total"><td>Net Farm Profit Before Taxes (Line F - Line I)</td><td>$2,094,300</td><td>$1,500,000</td></tr>
-
-        <tr class="fin-sec-header"><td colspan="3">Other Information & Owner Withdrawals</td></tr>
-        <tr><td class="fin-indent">Total Annual Non-Farm Income</td><td>$0</td><td>$20,000</td></tr>
-        <tr><td class="fin-indent">Total Annual Owner Withdrawals</td><td>$0</td><td>$105,000</td></tr>
-        <tr><td class="fin-indent">Total Annual Principal & Interest Payments</td><td>$972,900</td><td>$1,200,000</td></tr>
-
-        <tr class="fin-sec-header"><td colspan="3">Capital Purchases During Year</td></tr>
-        <tr><td class="fin-indent">Machinery & Equipment</td><td>$50,000</td><td>$55,000</td></tr>
-        <tr><td class="fin-indent">Buildings, Improvements & Facilities</td><td>$345,000</td><td>$319,900</td></tr>
-    </tbody>
-</table>"""
-    return html
-
-def render_balance_sheet(bs_data):
-    html = """<style>
-.bs-table { width: 100%; border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1e293b; margin-bottom: 25px; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; }
-.bs-table th { background-color: #0f172a; color: #ffffff; font-weight: 600; text-align: right; padding: 10px 14px; border-bottom: 2px solid #16a34a; }
-.bs-table th:first-child { text-align: left; }
-.bs-table td { padding: 8px 14px; border-bottom: 1px solid #f1f5f9; text-align: right; }
-.bs-table td:first-child { text-align: left; }
-.bs-sec-header { background-color: #f8fafc; font-weight: 700; color: #0f172a; border-top: 1px solid #cbd5e1; text-transform: uppercase; font-size: 13px; letter-spacing: 0.5px; }
-.bs-indent { padding-left: 28px !important; color: #334155; }
-.bs-subtotal { font-weight: 700; background-color: #f1f5f9; border-top: 1px solid #94a3b8; border-bottom: 2px solid #475569; color: #0f172a; }
-.bs-grand-total { font-weight: 800; background-color: #dcfce7; color: #15803d; border-top: 2px solid #16a34a; border-bottom: 3px double #16a34a; font-size: 15px; }
-</style>
-<table class="bs-table">
-    <thead>
-        <tr>
-            <th>Balance Sheet Category (Fair Market Value as of Dec 31)</th>
-            <th>2018 (Prior Year)</th>
-            <th>2019 (Current Year)</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr class="bs-sec-header"><td colspan="3">CURRENT ASSETS</td></tr>
-        <tr><td class="bs-indent">Cash and Savings</td><td>$2,100,000</td><td>$2,200,000</td></tr>
-        <tr><td class="bs-indent">Accounts Receivable</td><td>$1,125,000</td><td>$1,100,000</td></tr>
-        <tr><td class="bs-indent">Homegrown Feed Inventory</td><td>$598,500</td><td>$600,000</td></tr>
-        <tr><td class="bs-indent">Purchased Feed Inventory</td><td>$80,000</td><td>$100,000</td></tr>
-        <tr><td class="bs-indent">Investment in Growing Crops</td><td>$98,000</td><td>$100,000</td></tr>
-        <tr><td class="bs-indent">Prepaid Expenses</td><td>$460,000</td><td>$400,000</td></tr>
-        <tr class="bs-subtotal"><td>TOTAL CURRENT ASSETS</td><td>$4,461,500</td><td>$4,500,000</td></tr>
-
-        <tr class="bs-sec-header"><td colspan="3">INTERMEDIATE ASSETS</td></tr>
-        <tr><td class="bs-indent">Breeding Livestock - Dairy</td><td>$3,120,000</td><td>$3,000,000</td></tr>
-        <tr><td class="bs-indent">Equipment and Farm Vehicles</td><td>$6,800,070</td><td>$7,000,000</td></tr>
-        <tr class="bs-subtotal"><td>TOTAL INTERMEDIATE ASSETS</td><td>$9,920,070</td><td>$10,000,000</td></tr>
-
-        <tr class="bs-sec-header"><td colspan="3">LONG TERM ASSETS</td></tr>
-        <tr><td class="bs-indent">Farm Real Estate & Improvements</td><td>$3,100,000</td><td>$3,200,000</td></tr>
-        <tr><td class="bs-indent">Buildings and Facilities</td><td>$4,220,000</td><td>$4,800,000</td></tr>
-        <tr class="bs-subtotal"><td>TOTAL LONG TERM ASSETS</td><td>$7,320,000</td><td>$8,000,000</td></tr>
-
-        <tr class="bs-grand-total"><td>TOTAL ASSETS</td><td>$21,701,570</td><td>$22,500,000</td></tr>
-
-        <tr class="bs-sec-header"><td colspan="3">CURRENT LIABILITIES</td></tr>
-        <tr><td class="bs-indent">Accounts Payable</td><td>$308,800</td><td>$300,000</td></tr>
-        <tr><td class="bs-indent">Operating Loan Balance</td><td>$2,630,000</td><td>$2,800,000</td></tr>
-        <tr><td class="bs-indent">Accrued Interest (Operating & Term Debt)</td><td>$25,000</td><td>$50,000</td></tr>
-        <tr><td class="bs-indent">Current Portion of Term Debt (due within 1 yr)</td><td>$835,600</td><td>$1,000,000</td></tr>
-        <tr class="bs-subtotal"><td>TOTAL CURRENT LIABILITIES</td><td>$3,799,400</td><td>$4,150,000</td></tr>
-
-        <tr class="bs-sec-header"><td colspan="3">NON-CURRENT LIABILITIES</td></tr>
-        <tr><td class="bs-indent">Remaining Principal on Intermediate Loans</td><td>$182,600</td><td>$1,000,000</td></tr>
-        <tr><td class="bs-indent">Remaining Principal on Long Term Loans</td><td>$648,600</td><td>$50,000</td></tr>
-        <tr class="bs-subtotal"><td>TOTAL NON-CURRENT LIABILITIES</td><td>$831,200</td><td>$1,050,000</td></tr>
-
-        <tr class="bs-subtotal"><td>TOTAL LIABILITIES</td><td>$4,630,600</td><td>$5,200,000</td></tr>
-
-        <tr class="bs-grand-total"><td>NET WORTH (OWNER EQUITY)</td><td>$17,070,970</td><td>$17,300,000</td></tr>
-    </tbody>
-</table>"""
-    return html
-
-def render_cash_flow(cf_data):
-    html = """<style>
-.cf-table { width: 100%; border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1e293b; margin-bottom: 25px; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; }
-.cf-table th { background-color: #0f172a; color: #ffffff; font-weight: 600; text-align: right; padding: 10px 14px; border-bottom: 2px solid #eab308; }
-.cf-table th:first-child { text-align: left; }
-.cf-table td { padding: 9px 14px; border-bottom: 1px solid #f1f5f9; text-align: right; }
-.cf-table td:first-child { text-align: left; font-weight: 600; }
-.cf-highlight { background-color: #fef9c3; color: #854d0e; font-weight: 700; border-top: 2px solid #eab308; border-bottom: 2px solid #eab308; }
-</style>
-<table class="cf-table">
-    <thead>
-        <tr>
-            <th>Cash Flow & Debt Service Coverage Metric</th>
-            <th>2018 (Prior Year)</th>
-            <th>2019 (Current Year)</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr><td>Net Farm Income / Operating Profit</td><td>$2,094,300</td><td>$1,500,000</td></tr>
-        <tr><td>Add back: Depreciation (Non-cash expense)</td><td>+$388,600</td><td>+$385,000</td></tr>
-        <tr><td>Less: Estimated Income Taxes & Family Living</td><td>-$0</td><td>-$105,000</td></tr>
-        <tr style="background-color: #f8fafc;"><td>Net Operating Cash Available for Debt Service</td><td>$2,482,900</td><td>$1,780,000</td></tr>
-        <tr><td>Annual Principal & Interest Debt Payments</td><td>$972,900</td><td>$1,200,000</td></tr>
-        <tr class="cf-highlight"><td>Debt Service Coverage Ratio (DSCR)</td><td>2.55x</td><td>1.48x</td></tr>
-        <tr><td>Net Free Cash Flow After Debt Service</td><td>+$1,510,000</td><td>+$580,000</td></tr>
-    </tbody>
-</table>"""
-    return html
-
-def render_dhia_summary(dhia_data):
-    html = """<style>
-.dhia-card { border: 2px solid #0284c7; border-radius: 8px; background-color: #ffffff; padding: 18px; font-family: 'Segoe UI', Arial, sans-serif; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-.dhia-header { background-color: #0284c7; color: #ffffff; padding: 10px 15px; margin: -18px -18px 15px -18px; border-radius: 6px 6px 0 0; display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 16px; }
-.dhia-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; margin-bottom: 15px; }
-.dhia-box { border: 1px solid #cbd5e1; border-radius: 6px; background-color: #f8fafc; padding: 12px; }
-.dhia-box-title { font-weight: 700; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 4px; margin-bottom: 10px; font-size: 14px; text-transform: uppercase; }
-.dhia-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.dhia-table th { background-color: #e2e8f0; color: #1e293b; font-weight: 600; text-align: center; padding: 5px; border: 1px solid #cbd5e1; }
-.dhia-table td { text-align: center; padding: 5px; border: 1px solid #e2e8f0; background-color: #ffffff; }
-.dhia-warn { background-color: #fef08a !important; font-weight: 700; color: #854d0e; }
-.dhia-good { background-color: #dcfce7 !important; font-weight: 700; color: #15803d; }
-</style>
-<div class="dhia-card">
-    <div class="dhia-header">
-        <span>MINNESOTA DHIA - HERD SUMMARY REPORT (DHI-302)</span>
-        <span>ST. PAUL DAIRY / SALFER DAIRY (Herd #41-62-7001)</span>
-    </div>
-    
-    <div class="dhia-grid">
-        <div class="dhia-box">
-            <div class="dhia-box-title">📊 Peak & Persistency Summary (305 ME Milk)</div>
-            <table class="dhia-table">
-                <thead>
-                    <tr><th>Lactation</th><th>Cows</th><th>305 ME (lbs)</th><th>Peak Milk (lbs)</th><th>Peak DIM</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td>1st Lactation</td><td>24</td><td>26,140</td><td class="dhia-warn">78 lbs</td><td>81</td></tr>
-                    <tr><td>2nd Lactation</td><td>26</td><td>27,944</td><td>104 lbs</td><td>61</td></tr>
-                    <tr><td>3rd+ Lactation</td><td>14</td><td>25,396</td><td>107 lbs</td><td>50</td></tr>
-                    <tr style="font-weight:700; background-color:#f1f5f9;"><td>All Herd</td><td>64</td><td>26,710</td><td>96 lbs</td><td>65</td></tr>
-                </tbody>
-            </table>
-            <p style="font-size:12px; margin-top:8px; color:#475569;"><b>Peak Ratio (1st / Others):</b> <span class="dhia-warn">0.77</span> <i>(Indicates underperformance in 1st lactation heifers vs. mature cows)</i></p>
-        </div>
-
-        <div class="dhia-box">
-            <div class="dhia-box-title">🦠 Somatic Cell Count (SCC) & Udder Health</div>
-            <table class="dhia-table">
-                <thead>
-                    <tr><th>Lactation</th><th>Avg LS</th><th>% LS 0-1</th><th>% LS 2-3</th><th>% LS 4-6</th><th>% LS 7-9</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td>1st Lact</td><td>1.5</td><td>58%</td><td>32%</td><td>11%</td><td>0%</td></tr>
-                    <tr><td>2nd Lact</td><td>1.9</td><td>50%</td><td>31%</td><td>13%</td><td class="dhia-warn">6%</td></tr>
-                    <tr><td>3rd+ Lact</td><td>2.7</td><td>30%</td><td>30%</td><td class="dhia-warn">40%</td><td>0%</td></tr>
-                    <tr style="font-weight:700; background-color:#f1f5f9;"><td>All Herd</td><td>1.9</td><td>49%</td><td>31%</td><td>18%</td><td>2%</td></tr>
-                </tbody>
-            </table>
-            <p style="font-size:12px; margin-top:8px; color:#b91c1c;"><b>Bulk Tank Raw SCC:</b> 280,000 cells/mL | <b>30-Day Milk Loss:</b> 2,163 lbs ($429 direct loss/mo)</p>
-        </div>
-    </div>
-
-    <div class="dhia-grid">
-        <div class="dhia-box">
-            <div class="dhia-box-title">🧬 Reproduction & Fertility Performance</div>
-            <table class="dhia-table">
-                <thead>
-                    <tr><th>Metric</th><th>Cows</th><th>Heifers</th><th>Benchmark Goal</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td>21-Day Pregnancy Rate</td><td class="dhia-warn">15%</td><td>-</td><td>20% - 24%</td></tr>
-                    <tr><td>Heat Detection Index</td><td>44%</td><td>-</td><td>55%+</td></tr>
-                    <tr><td>Conceived 1st Service</td><td>51%</td><td>55%</td><td>50%+</td></tr>
-                    <tr><td>Services per Conception</td><td>1.7</td><td>1.8</td><td>&lt; 1.8</td></tr>
-                    <tr><td>Calving Interval</td><td>12.3 mo</td><td>24.2 mo</td><td>12.5 mo</td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <div class="dhia-box">
-            <div class="dhia-box-title">🚪 Herd Turnover & Culling Reasons</div>
-            <table class="dhia-table">
-                <thead>
-                    <tr><th>Culling Reason</th><th>% of Culls</th><th>Primary Driver</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td>Reproductive Failure</td><td class="dhia-warn">42%</td><td>Delayed OvSynch / Missed Shots</td></tr>
-                    <tr><td>Low Milk Production</td><td>18%</td><td>Heifer peak underperformance</td></tr>
-                    <tr><td>Mastitis / High SCC</td><td>15%</td><td>Night shift pre-dip routine cut short</td></tr>
-                    <tr><td>Died / Mortality</td><td>15%</td><td>Fresh cow transition issues</td></tr>
-                    <tr><td>Other / Dairy Sale</td><td>10%</td><td>Voluntary cull</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>"""
-    return html
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
@@ -395,9 +140,9 @@ HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SPECIFIC, SOCRATI
 2. Reproduction / Peak Milk Issue:
    - If asked how crop farming overlaps with herd health routines, or why OvSynch injections might be missed: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24 to 48 hours because you are out in the tractor on 1,200 acres all day.
 
-CRITICAL DIALOGUE & FORMATTING RULES:
+CRITICAL DIALOGUE RULES:
 - NEVER repeat or echo the user's question back.
-- NEVER output character notes, planning thoughts, headers, checklists, or labels like "Goal:", "User:", or "Dan:".
+- NEVER output character notes, planning thoughts, headers, checklists, or labels.
 - Speak directly in character as Dan Salfer in 2 to 4 conversational sentences, exactly like a text message or face-to-face chat on the farm."""
         }
     }
@@ -448,7 +193,6 @@ else:
 
 st.sidebar.markdown("---")
 
-# SCENARIO SELECTOR IN SIDEBAR
 selected_farm_key = st.sidebar.selectbox("Select Farm Scenario:", list(st.session_state.farms.keys()))
 farm_data = st.session_state.farms[selected_farm_key]
 
@@ -458,7 +202,7 @@ with st.sidebar.expander("🔒 Instructor Admin Portal"):
     if admin_pass == "dairy123":
         st.success("Authenticated")
         
-        st.markdown("#### 📑 Report Visibility")
+        st.markdown("#### 📑 Report Visibility Controls")
         farm_data["show_dhia"] = st.checkbox("Show DHIA 302 Summary", value=farm_data["show_dhia"])
         farm_data["show_financials"] = st.checkbox("Show Financial Statements", value=farm_data["show_financials"])
         
@@ -468,36 +212,31 @@ with st.sidebar.expander("🔒 Instructor Admin Portal"):
         if df_logs.empty:
             st.info("No logs recorded yet.")
         else:
-            students = df_logs["student_name"].unique()
-            selected_student = st.selectbox("Select Student:", students)
-            student_df = df_logs[df_logs["student_name"] == selected_student]
-            st.dataframe(student_df[["timestamp", "role", "message"]], use_container_width=True)
-            
-            csv_data = df_logs.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download All CSV",
-                data=csv_data,
-                file_name="dairy_consulting_student_transcripts.csv",
-                mime="text/csv"
-            )
+            students = df_logs["student_name"].unique() if "student_name" in df_logs.columns else []
+            if len(students) > 0:
+                selected_student = st.selectbox("Select Student:", students)
+                student_df = df_logs[df_logs["student_name"] == selected_student]
+                cols_to_show = [c for c in ["timestamp", "role", "message"] if c in student_df.columns]
+                st.dataframe(student_df[cols_to_show], use_container_width=True)
+                
+                csv_data = df_logs.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download All Transcripts (CSV)",
+                    data=csv_data,
+                    file_name="dairy_consulting_student_transcripts.csv",
+                    mime="text/csv"
+                )
     elif admin_pass:
         st.error("Incorrect Password")
 
 if not api_key:
-    st.sidebar.warning("⚠️ API Key not detected. Enter fallback key below:")
-    api_key = st.sidebar.text_input("Gemini API Key:", type="password")
+    st.sidebar.warning("⚠️ API Key not detected. Enter key below:")
+    api_key = st.sidebar.text_input("Gemini API Key:", type="password", key="fallback_key")
 
 # --- MAIN APP BODY (TABS) ---
 if st.session_state.student_info is None:
     st.info("👈 Please sign in using the sidebar on the left to access farm records and start your producer interview.")
 else:
-    # BUILD TABS IN EXACT ORDER REQUESTED:
-    # 1. Chat Interface
-    # 2. Herd Summary (DHIA 302)
-    # 3. Income Statement
-    # 4. Balance Sheet
-    # 5. Cash Flow Statement
-    
     tab_titles = ["💬 Producer Interview Chat"]
     if farm_data["show_dhia"]:
         tab_titles.append("📊 DHIA 302 Herd Summary")
@@ -515,14 +254,17 @@ else:
         
         hidden_reports = []
         if not farm_data["show_dhia"]: hidden_reports.append("DHIA 302 Herd Summary")
-        if not farm_data["show_financials"]: hidden_reports.append("Financial Statements (Income, Balance Sheet, Cash Flow)")
+        if not farm_data["show_financials"]: hidden_reports.append("Financial Statements")
         if hidden_reports:
             st.warning(f"🔒 Note: The following reports are withheld by the producer: {', '.join(hidden_reports)}. You must ask permission during your interview to view them.")
 
         if not api_key:
-            st.error("⚠️ Gemini API Key required to run chat.")
+            st.error("⚠️ Gemini API Key required to run chat. Enter key in the sidebar.")
         else:
-            genai.configure(api_key=api_key)
+            try:
+                genai.configure(api_key=api_key)
+            except Exception as e:
+                st.error(f"API Configuration Warning: {e}")
 
             if "messages" not in st.session_state:
                 st.session_state.messages = [
@@ -606,32 +348,197 @@ else:
 
     tab_idx += 1
 
-    # TAB 2: HERD SUMMARY (DHIA 302)
+    # TAB 2: HERD SUMMARY (DHIA 302) USING NATIVE STREAMLIT DATASETS
     if farm_data["show_dhia"]:
         with tabs[tab_idx]:
             st.header(f"Minnesota DHIA 302 Summary: {farm_data['name']}")
-            st.caption("Official Minnesota DHIA DHI-302 Herd & Consultant Summary Format")
-            st.markdown(render_dhia_summary(farm_data), unsafe_allow_html=True)
+            st.caption("Official Minnesota DHIA DHI-302 Herd & Consultant Summary")
+
+            st.subheader("📍 Facility & Operational Overview")
+            df_ops = pd.DataFrame({
+                "Operational Category": ["Location", "Management", "Herd Size & Breed", "Housing Setup", "Milking System", "Milking Schedule"],
+                "Farm Status": [farm_data["location"], farm_data["owner"], farm_data["herd_size"], farm_data["facility"], farm_data["milking_system"], farm_data["milking_freq"]]
+            })
+            st.dataframe(df_ops, use_container_width=True, hide_index=True)
+
+            st.subheader("🥛 Peak & Persistency Summary (305 ME Milk)")
+            df_peak = pd.DataFrame({
+                "Lactation Group": ["1st Lactation", "2nd Lactation", "3rd+ Lactation", "All Herd Overall"],
+                "Cows Tested": [24, 26, 14, 64],
+                "305 ME Milk (lbs)": ["26,140", "27,944", "25,396", "26,710"],
+                "Peak Milk Yield (lbs)": ["78 (Underperforming)", "104", "107", "96"],
+                "DIM at Peak": [81, 61, 50, 65]
+            })
+            st.dataframe(df_peak, use_container_width=True, hide_index=True)
+            st.info("💡 **Peak Ratio (1st / Mature Others):** **0.77** *(Benchmark Goal: > 0.80. Indicates 1st lactation heifer peak underperformance)*")
+
+            col_scc, col_repro = st.columns(2)
+            with col_scc:
+                st.subheader("🦠 Udder Health & Somatic Cell Evaluation")
+                df_scc = pd.DataFrame({
+                    "Lactation Group": ["1st Lactation", "2nd Lactation", "3rd+ Lactation", "All Herd"],
+                    "Avg LS": [1.5, 1.9, 2.7, 1.9],
+                    "% LS 0-1": ["58%", "50%", "30%", "49%"],
+                    "% LS 2-3": ["32%", "31%", "30%", "31%"],
+                    "% LS 4-6": ["11%", "13%", "40%", "18%"],
+                    "% LS 7-9": ["0%", "6%", "0%", "2%"]
+                })
+                st.dataframe(df_scc, use_container_width=True, hide_index=True)
+                st.error("⚠️ **Bulk Tank Raw SCC:** 280,000 cells/mL | **30-Day Milk Loss:** 2,163 lbs ($429 direct loss/mo)")
+
+            with col_repro:
+                st.subheader("🧬 Reproduction & Herd Turnover")
+                df_repro = pd.DataFrame({
+                    "Performance Metric": ["21-Day Pregnancy Rate", "Heat Detection Index", "Services / Conception (Cows)", "Services / Conception (Heifers)", "Top Culling Driver"],
+                    "Farm Level": ["15% (Low)", "44%", "1.7", "1.8", "Reproduction Failure (42%)"],
+                    "Benchmark Goal": ["20% - 24%", "55%+", "< 1.8", "< 1.8", "< 15% Culls"]
+                })
+                st.dataframe(df_repro, use_container_width=True, hide_index=True)
+
         tab_idx += 1
 
-    # TAB 3: INCOME STATEMENT
+    # TAB 3: INCOME STATEMENT USING NATIVE STREAMLIT DATAFRAMES
     if farm_data["show_financials"]:
         with tabs[tab_idx]:
             st.header(f"Farm Income Statement: {farm_data['name']}")
             st.caption("Cash Basis 2-Year Comparative Statement (Dairy Challenge Format)")
-            st.markdown(render_income_statement(farm_data), unsafe_allow_html=True)
+
+            df_inc = pd.DataFrame({
+                "Financial Category": [
+                    "--- FARM REVENUES ---",
+                    "Milk Sales",
+                    "Raised Calf, Cow, & Cull Sales",
+                    "Other Dairy Revenues",
+                    "GROSS FARM INCOME (Line F)",
+                    "--- DAIRY OPERATING EXPENSES ---",
+                    "Feed (Grown & Purchased)",
+                    "Labor & Employee Benefits",
+                    "Veterinary, Medicine & Breeding",
+                    "Milk Marketing & Supplies",
+                    "Repairs, Fuel, & Crop Inputs",
+                    "--- NON-DAIRY & OVERHEAD EXPENSES ---",
+                    "Interest & Taxes",
+                    "Depreciation",
+                    "TOTAL FARM EXPENSES (Line I)",
+                    "--- NET FARM PROFIT BEFORE TAXES ---",
+                    "NET FARM PROFIT (Line F - Line I)"
+                ],
+                "2018 Prior Year ($)": [
+                    "", "$2,580,000", "$170,000", "$15,000", "$2,765,000",
+                    "", "$1,250,000", "$360,000", "$138,000", "$92,000", "$610,000",
+                    "", "$227,500", "$388,600", "$2,450,000",
+                    "", "$315,000"
+                ],
+                "2019 Current Year ($)": [
+                    "", "$2,716,250", "$185,000", "$0", "$2,901,250",
+                    "", "$1,325,000", "$380,000", "$145,000", "$98,000", "$641,250",
+                    "", "$243,000", "$385,000", "$2,589,250",
+                    "", "$312,000"
+                ]
+            })
+            st.dataframe(df_inc, use_container_width=True, hide_index=True)
+
+            col_supp1, col_supp2 = st.columns(2)
+            with col_supp1:
+                st.subheader("📌 Capital Purchases During Year")
+                df_cap = pd.DataFrame({
+                    "Category": ["Machinery & Equipment Purchases", "Buildings, Improvements & Facilities"],
+                    "2018 ($)": ["$50,000", "$345,000"],
+                    "2019 ($)": ["$55,000", "$319,900"]
+                })
+                st.dataframe(df_cap, use_container_width=True, hide_index=True)
+            with col_supp2:
+                st.subheader("📌 Debt Service & Owner Cash Flow")
+                df_dflow = pd.DataFrame({
+                    "Category": ["Total Annual Principal & Interest", "Total Annual Owner Withdrawals"],
+                    "2018 ($)": ["$972,900", "$0"],
+                    "2019 ($)": ["$1,200,000", "$105,000"]
+                })
+                st.dataframe(df_dflow, use_container_width=True, hide_index=True)
+
         tab_idx += 1
 
-        # TAB 4: BALANCE SHEET
+        # TAB 4: BALANCE SHEET USING NATIVE STREAMLIT DATAFRAMES
         with tabs[tab_idx]:
             st.header(f"Balance Sheet Summary: {farm_data['name']}")
             st.caption("Fair Market Value Statement as of December 31 (Dairy Challenge Format)")
-            st.markdown(render_balance_sheet(farm_data), unsafe_allow_html=True)
+
+            df_bs = pd.DataFrame({
+                "Balance Sheet Line Item": [
+                    "--- CURRENT ASSETS ---",
+                    "Cash and Savings",
+                    "Accounts Receivable",
+                    "Homegrown Feed Inventory",
+                    "Purchased Feed Inventory & Prepaids",
+                    "TOTAL CURRENT ASSETS",
+                    "--- INTERMEDIATE ASSETS ---",
+                    "Breeding Livestock (Dairy Herd)",
+                    "Equipment and Farm Vehicles",
+                    "TOTAL INTERMEDIATE ASSETS",
+                    "--- LONG TERM ASSETS ---",
+                    "Farm Real Estate, Land & Buildings",
+                    "TOTAL LONG TERM ASSETS",
+                    "=== TOTAL ASSETS ===",
+                    "--- CURRENT LIABILITIES ---",
+                    "Accounts Payable & Operating Loans",
+                    "Current Portion of Term Debt",
+                    "TOTAL CURRENT LIABILITIES",
+                    "--- NON-CURRENT LIABILITIES ---",
+                    "Remaining Intermediate & Long Term Debt Principal",
+                    "TOTAL NON-CURRENT LIABILITIES",
+                    "=== TOTAL LIABILITIES ===",
+                    "🏆 NET WORTH (OWNER EQUITY)"
+                ],
+                "2018 Prior Year ($)": [
+                    "", "$2,100,000", "$1,125,000", "$598,500", "$638,000", "$4,461,500",
+                    "", "$3,120,000", "$6,800,070", "$9,920,070",
+                    "", "$7,320,000", "$7,320,000",
+                    "$21,701,570",
+                    "", "$2,963,800", "$835,600", "$3,799,400",
+                    "", "$831,200", "$831,200",
+                    "$4,630,600",
+                    "$17,070,970"
+                ],
+                "2019 Current Year ($)": [
+                    "", "$2,200,000", "$1,100,000", "$600,000", "$600,000", "$4,500,000",
+                    "", "$3,000,000", "$7,000,000", "$10,000,000",
+                    "", "$8,000,000", "$8,000,000",
+                    "$22,500,000",
+                    "", "$3,150,000", "$1,000,000", "$4,150,000",
+                    "", "$1,050,000", "$1,050,000",
+                    "$5,200,000",
+                    "$17,300,000"
+                ]
+            })
+            st.dataframe(df_bs, use_container_width=True, hide_index=True)
+
         tab_idx += 1
 
-        # TAB 5: CASH FLOW STATEMENT
+        # TAB 5: CASH FLOW STATEMENT USING NATIVE WIDGETS & DATAFRAME
         with tabs[tab_idx]:
             st.header(f"Cash Flow & Debt Service Summary: {farm_data['name']}")
             st.caption("Operating Cash Flow & Debt Coverage Ratios")
-            st.markdown(render_cash_flow(farm_data), unsafe_allow_html=True)
+
+            df_cf = pd.DataFrame({
+                "Cash Flow & Coverage Metric": [
+                    "Net Farm Profit / Operating Profit",
+                    "Add back: Depreciation (Non-cash expense)",
+                    "Less: Estimated Family Living & Taxes",
+                    "Net Operating Cash Available for Debt Service",
+                    "Annual Principal & Interest Debt Service",
+                    "Debt Service Coverage Ratio (DSCR)",
+                    "Net Free Cash Flow After Debt Service"
+                ],
+                "2018 Prior Year": ["$2,094,300", "+$388,600", "-$0", "$2,482,900", "$972,900", "2.55x", "+$1,510,000"],
+                "2019 Current Year": ["$1,500,000", "+$385,000", "-$105,000", "$1,780,000", "$1,200,000", "1.48x", "+$580,000"]
+            })
+            st.dataframe(df_cf, use_container_width=True, hide_index=True)
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            with m_col1:
+                st.metric(label="2019 Operating Cash Available", value="$1,780,000")
+            with m_col2:
+                st.metric(label="2019 Debt Service Coverage Ratio (DSCR)", value="1.48x", delta="Bench: >1.25x")
+            with m_col3:
+                st.metric(label="Net Free Cash Flow", value="+$580,000")
         tab_idx += 1
