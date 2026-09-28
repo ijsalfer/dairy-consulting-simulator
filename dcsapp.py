@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
+import re
 import google.generativeai as genai
 
 # --- PAGE CONFIGURATION ---
@@ -48,33 +49,38 @@ def get_transcripts():
     conn.close()
     return df
 
-def clean_bot_reply(raw_text):
-    if not raw_text:
-        return raw_text
+# --- HELPER FUNCTION: BOT REPLY SANITIZER ---
+def sanitize_bot_reply(reply_text, user_prompt=""):
+    if not reply_text:
+        return "Sorry, I didn't catch that. Could you ask me that again?"
     
-    lines = raw_text.strip().split('\n')
-    filtered = []
-    meta_prefixes = ("user:", "goal:", "salfer is", "keep it", "focus on", "current question:", "persona:", "character:", "objective:")
+    cleaned = reply_text.strip()
     
-    for line in lines:
-        l_lower = line.strip().lower()
-        if any(l_lower.startswith(p) for p in meta_prefixes):
-            continue
-        filtered.append(line)
+    # Strip out common internal reasoning / planning blocks
+    cleaned = re.sub(r'^(User|Student|Question|Goal|Salfer|Farmer|Context|Instructions?|Persona):.*?
+', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r'^\*.*?\*
+?', '', cleaned)
+    cleaned = re.sub(r'^(Goal|Salfer is|He manages|He's skeptical|Focus on):.*?
+?', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     
-    cleaned = "\n".join(filtered).strip()
-    
-    # If meta-text was filtered out, check if a quoted string remains
-    import re
-    quoted_matches = re.findall(r'"([^"]{10,})"', raw_text)
-    if quoted_matches and len(cleaned) > len(quoted_matches[-1]) + 15:
-        cleaned = quoted_matches[-1].strip()
-
-    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+    # Remove leading/trailing quotation marks if whole message is wrapped
+    if cleaned.startswith('"') and cleaned.endswith('"') and len(cleaned) > 2:
         cleaned = cleaned[1:-1].strip()
+    
+    # If the reply accidentally echoed the user prompt verbatim, strip it
+    if user_prompt and cleaned.lower().startswith(user_prompt.lower()):
+        cleaned = cleaned[len(user_prompt):].strip()
+        if cleaned.startswith("?") or cleaned.startswith(":"):
+            cleaned = cleaned[1:].strip()
+            
+    # Final cleanup of extra quotes or markdown headers
+    cleaned = re.sub(r'^#+\s*', '', cleaned)
+    
+    if not cleaned:
+        cleaned = "Main thing for me is keeping the cows healthy and making sure the farm stays profitable while balancing crop work."
         
-    return cleaned if cleaned else raw_text.strip()
-
+    return cleaned
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
@@ -100,6 +106,31 @@ if "farms" not in st.session_state:
                 "preg_rate": "15% (Goal: 20%+)",
                 "cull_rate": "34% (Primary reasons: Mastitis & Repro failure)"
             },
+            "dhia_details": {
+                "production": {
+                    "RHA Milk": "26,500 lbs (Fat 4.8%, Protein 3.4%)",
+                    "305 ME Milk": "Lact 1: 26,140 lbs | Lact 2: 27,944 lbs | Lact 3+: 25,396 lbs",
+                    "Peak Milk": "Lact 1: 78 lbs (DIM 81) | Lact 2: 104 lbs (DIM 61) | Lact 3+: 107 lbs (DIM 50)",
+                    "Peak Ratio (1st/Others)": "0.77 (Underperforming 1st lact relative to mature cows)"
+                },
+                "udder_health": {
+                    "Bulk Tank Raw SCC": "280,000 cells/mL (Test day range 184k - 280k)",
+                    "Linear Score Distribution": "Lact 1: 58% LS 0-1, 32% LS 2-3, 11% LS 4-6 | Lact 2: 50% LS 0-1, 31% LS 2-3, 13% LS 4-6, 6% LS 7-9 (28% LS > 4.0) | Lact 3+: 30% LS 0-1, 30% LS 2-3, 40% LS 4-6",
+                    "30-Day SCC Production Loss": "2,163 lbs milk lost per test ($429 monthly direct loss)",
+                    "Infection Rate": "23% of mature cows chronically infected; fresh cow infection rate 20%"
+                },
+                "reproduction": {
+                    "21-Day Pregnancy Rate": "15% (Cows) | Goal: 20%+",
+                    "Heat Detection Index": "44%",
+                    "Services per Conception": "1.7 (Cows) | 1.8 (Heifers)",
+                    "First Service Conception": "51%",
+                    "Calving Interval": "12.3 months (Open period average 70 days for cows)"
+                },
+                "turnover": {
+                    "Annual Turnover / Cull Rate": "34% - 52% total turnover",
+                    "Reasons for Leaving Herd": "Repro Failure: 42% | Low Milk: 18% | Mastitis/High SCC: 15% | Died/Mortality: 15% | Dairy/Other: 10%"
+                }
+            },
             "financials": {
                 "income_statement": {
                     "Gross Milk Revenue": "$2,716,250",
@@ -122,26 +153,32 @@ if "farms" not in st.session_state:
                     "Debt Service Coverage Ratio (DSCR)": "2.0x"
                 }
             },
-            "persona_prompt": """You are Dan Salfer, the owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota. You are being interviewed by a student dairy consultant.
+            "persona_prompt": """You are Dan Salfer, the owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota. You are being interviewed face-to-face or via text message by a student dairy consultant.
 
 YOUR PERSONALITY & DEMEANOR:
-- Proud, hardworking, practical, and deeply committed to your herd.
-- Stretched thin between managing 1,200 acres of crops and overseeing 4 hired labor staff.
-- Skeptical of outside consultants who immediately tell you what to do without understanding your daily labor realities.
-- Defensive if challenged directly or accused of poor management (e.g., if a student says "Your prep routine is bad").
+- Proud, hardworking, practical, and deeply committed to your herd and family farm.
+- Stretched thin between managing 1,200 acres of crops and overseeing 4 hired parlor and feed staff.
+- Skeptical of outside consultants who immediately offer advice without understanding your daily labor and crop realities.
+- Defensive if challenged directly or accused of poor management (e.g., if a student says "Your prep routine is bad" or "Your SCC is terrible").
 
-HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SOCRATIC QUESTIONS):
+DETAILED HERD KNOWLEDGE BASE (YOU KNOW THESE NUMBERS IF SPECIFICALLY ASKED):
+- Production & Milk: RHA is 26,500 lbs (Fat 4.8%, Protein 3.4%). 1st lactation cows peak around 78 lbs, while 2nd lactation peak at 104 lbs and 3rd+ at 107 lbs. Peak ratio is 0.77.
+- Udder Health & SCC: Bulk tank SCC runs ~280,000 cells/mL. About 28% of 2nd+ lactation cows have linear scores above 4.0. The DHIA sheet shows about 2,163 lbs of milk lost every 30 days due to SCC ($429 monthly direct loss).
+- Reproduction: Pregnancy rate is sitting at 15% (Heat Detection Index is 44%, Services per Conception is 1.7).
+- Culling & Turnover: Turnover rate is ~34-52%. 42% of culls leave for repro failure, 18% for low milk, 15% for mastitis/high SCC, and 15% die or get emergency culled.
+- Facility & Feed: 500 Holsteins in 6-row freestalls with deep sand. Double-12 parallel parlor milked 3x/day (6 AM, 2 PM, 10 PM). 1,200 acres cropland supplying 75% of feed. Milk price is $20.50/cwt.
+
+HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SPECIFIC, SOCRATIC QUESTIONS):
 1. SCC / Udder Health Issue:
-   - If asked about night shift routine or parlor auditing: Reveal that during the 10:00 PM night milking, the hired night crew cuts pre-dip contact time to 10-15 seconds (instead of 45-60) to finish their shift early.
-2. Reproduction Issue:
-   - If asked how crop work aligns with herd health schedules: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24-48 hours because you are in the tractor all day.
+   - If asked about the night shift milking routine, parlor auditing, or pre-dip contact time: Reveal that during the 10:00 PM night milking, the hired night crew cuts pre-dip contact time down to 10-15 seconds (instead of the required 45-60 seconds) to finish their shift faster and go home.
+2. Reproduction / Peak Milk Issue:
+   - If asked how crop farming overlaps with herd health routines, or why OvSynch injections might be missed: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24 to 48 hours because you are out in the tractor on 1,200 acres all day.
 
-CRITICAL OUTPUT FORMATTING INSTRUCTIONS (STRICT):
-- Respond ONLY with the exact spoken words of Dan Salfer.
-- Do NOT include internal monologue, planning notes, character analysis, labels (e.g., 'User:', 'Goal:', 'Dan:'), or bulleted summaries.
-- Do NOT wrap your spoken response in quotation marks.
-- Speak in plain, casual, natural conversational English, as if talking directly to a visitor on your farm or texting a colleague.
-- Keep responses concise: 2 to 4 sentences max."""
+CRITICAL DIALOGUE & FORMATTING RULES:
+- NEVER repeat or echo the user's question back.
+- NEVER output character notes, planning thoughts, headers, bullet points, or labels like "Goal:", "User:", or "Dan:".
+- NEVER wrap your entire response in quotation marks.
+- Speak directly in character as Dan Salfer in 2 to 4 conversational sentences, exactly like a text message or face-to-face chat on the farm. Keep it grounded, practical, and natural."""
         }
     }
 
@@ -229,6 +266,28 @@ else:
                 st.write(f"**Pregnancy Rate:** {farm_data['dhia_summary']['preg_rate']}")
                 st.write(f"**Cull Rate:** {farm_data['dhia_summary']['cull_rate']}")
                 st.write(f"**Milk Price / Land:** {farm_data['economics']['milk_price']} | {farm_data['economics']['crop_acres']}")
+            
+            st.markdown("---")
+            st.subheader("📋 Granular DHIA 302 Benchmark Metrics")
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                st.markdown("#### 🥛 Production & Peak Yields")
+                for k, v in farm_data.get("dhia_details", {}).get("production", {}).items():
+                    st.write(f"**{k}:** {v}")
+                
+                st.markdown("#### 🦠 Udder Health & Somatic Cell Count")
+                for k, v in farm_data.get("dhia_details", {}).get("udder_health", {}).items():
+                    st.write(f"**{k}:** {v}")
+
+            with d_col2:
+                st.markdown("#### 🧬 Reproduction & Fertility")
+                for k, v in farm_data.get("dhia_details", {}).get("reproduction", {}).items():
+                    st.write(f"**{k}:** {v}")
+
+                st.markdown("#### 🚪 Turnover & Culling Breakdown")
+                for k, v in farm_data.get("dhia_details", {}).get("turnover", {}).items():
+                    st.write(f"**{k}:** {v}")
+
         tab_idx += 1
 
     # TAB: FINANCIAL STATEMENTS
@@ -300,15 +359,22 @@ else:
 
                 # Generate Response via Gemini
                 try:
-                    # Prepare history for Gemini
+                    # Clean history construction with strict alternating turn pairs
                     gemini_history = []
-                    for m in st.session_state.messages[:-1]:
+                    
+                    # Convert session state messages (skip first bot greeting if unpaired)
+                    raw_messages = st.session_state.messages[:-1] # Exclude current user prompt
+                    
+                    for m in raw_messages:
                         role = "user" if m["role"] == "user" else "model"
+                        # Prevent consecutive identical roles
+                        if gemini_history and gemini_history[-1]["role"] == role:
+                            continue
                         gemini_history.append({"role": role, "parts": [m["content"]]})
 
-                    # If history starts with model greeting, prepend dummy user prompt to satisfy Gemini API structure
+                    # Gemini API requires history to start with a 'user' turn
                     if gemini_history and gemini_history[0]["role"] == "model":
-                        gemini_history.insert(0, {"role": "user", "parts": ["Hello Mr. Salfer"]})
+                        gemini_history.pop(0)
 
                     # Candidate models to try
                     model_candidates = [
@@ -316,8 +382,7 @@ else:
                         "models/gemini-1.5-flash",
                         "gemini-2.0-flash",
                         "models/gemini-2.0-flash",
-                        "gemini-1.5-pro",
-                        "models/gemini-1.5-pro"
+                        "gemini-1.5-pro"
                     ]
 
                     # Attempt dynamic listing if available
@@ -340,7 +405,8 @@ else:
                             chat = model.start_chat(history=gemini_history)
                             response = chat.send_message(user_input)
                             if response and response.text:
-                                bot_reply = clean_bot_reply(response.text)
+                                raw_text = response.text
+                                bot_reply = sanitize_bot_reply(raw_text, user_prompt=user_input)
                                 break
                         except Exception as err:
                             last_err = err
