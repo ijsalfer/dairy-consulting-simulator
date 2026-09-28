@@ -16,7 +16,7 @@ st.set_page_config(
 # 🔑 PERMANENT GEMINI API KEY CONFIGURATION
 # Paste your AIzaSy... key inside quotes below to hardcode permanently:
 # ==============================================================================
-HARDCODED_GEMINI_API_KEY = ""
+HARDCODED_GEMINI_API_KEY = "AQ.Ab8RN6Lw10ZXFxckakab9zIo1hmJptZ6sRUxsYcivchEPAbHgQ"
 
 # --- DATABASE SETUP (TRANSCRIPTS) ---
 def init_db():
@@ -105,6 +105,31 @@ def sanitize_bot_reply(reply_text, user_prompt=""):
         text = "I'm doing alright, just staying busy between the cows and the 1,200 acres. Main thing is keeping the place profitable."
         
     return text
+
+
+def configure_gemini_api(key_or_token):
+    if not key_or_token:
+        return False
+    k = key_or_token.strip()
+    if k.startswith("AQ.") or k.startswith("ya29."):
+        try:
+            import google.oauth2.credentials
+            creds = google.oauth2.credentials.Credentials(token=k)
+            genai.configure(credentials=creds)
+            return True
+        except Exception as e:
+            print(f"OAuth credentials setup error: {e}")
+    try:
+        genai.configure(api_key=k)
+        return True
+    except Exception as e:
+        try:
+            import google.oauth2.credentials
+            creds = google.oauth2.credentials.Credentials(token=k)
+            genai.configure(credentials=creds)
+            return True
+        except Exception:
+            return False
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
@@ -259,7 +284,7 @@ else:
         if not api_key:
             st.error("⚠️ Gemini API Key required to run chat.")
         else:
-            genai.configure(api_key=api_key)
+            configure_gemini_api(api_key)
 
             if "messages" not in st.session_state:
                 st.session_state.messages = [
