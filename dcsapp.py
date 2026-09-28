@@ -16,7 +16,7 @@ st.set_page_config(
 # 🔑 PERMANENT GEMINI API KEY CONFIGURATION
 # Paste your AIzaSy... key inside quotes below to hardcode permanently:
 # ==============================================================================
-HARDCODED_GEMINI_API_KEY = "AQ.Ab8RN6Lw10ZXFxckakab9zIo1hmJptZ6sRUxsYcivchEPAbHgQ"
+HARDCODED_GEMINI_API_KEY = "AQ.Ab8RN6L9Qw0QTodQSNrN_49JBIgkylKwj5KswP-YcY6MjBz5Bw"
 
 # --- DATABASE SETUP (TRANSCRIPTS) ---
 def init_db():
