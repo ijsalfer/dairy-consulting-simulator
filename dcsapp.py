@@ -52,32 +52,42 @@ def get_transcripts():
 # --- HELPER FUNCTION: BOT REPLY SANITIZER ---
 def sanitize_bot_reply(reply_text, user_prompt=""):
     if not reply_text:
-        return "Sorry, I didn't catch that. Could you ask me that again?"
+        return "I'm doing alright, just staying busy between the cows and the 1,200 acres. What can I help you with today?"
     
-    cleaned = reply_text.strip()
+    text = reply_text.strip()
     
-    # Strip out common internal reasoning / planning blocks safely
-    cleaned = re.sub(r'^(User|Student|Question|Goal|Salfer|Farmer|Context|Instructions?|Persona):.*?\n', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    cleaned = re.sub(r'^\*.*?\*\n?', '', cleaned)
-    cleaned = re.sub(r"^(Goal|Salfer is|He manages|He's skeptical|Focus on):.*?\n?", '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    
-    # Remove leading/trailing quotation marks if whole message is wrapped
-    if cleaned.startswith('"') and cleaned.endswith('"') and len(cleaned) > 2:
-        cleaned = cleaned[1:-1].strip()
-    
-    # If the reply accidentally echoed the user prompt verbatim, strip it
-    if user_prompt and cleaned.lower().startswith(user_prompt.lower()):
-        cleaned = cleaned[len(user_prompt):].strip()
-        if cleaned.startswith("?") or cleaned.startswith(":"):
-            cleaned = cleaned[1:].strip()
-            
-    # Final cleanup of extra quotes or markdown headers
-    cleaned = re.sub(r'^#+\s*', '', cleaned)
-    
-    if not cleaned:
-        cleaned = "Main thing for me is keeping the cows healthy and making sure the farm stays profitable while balancing crop work."
+    # 1. Look for 'Perfect.' or 'Final Answer:' marker where Gemini summarizes its final output
+    match_perfect = re.search(r'(?:Perfect\.|Final Answer:)\s*(.*)$', text, re.DOTALL | re.IGNORECASE)
+    if match_perfect and len(match_perfect.group(1).strip()) > 10:
+        text = match_perfect.group(1).strip()
+    else:
+        # 2. Filter out lines containing meta/planning keywords
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+        filtered = []
+        for p in paragraphs:
+            # Skip lines that look like CoT / planning / constraints
+            if re.search(r'^(User|Student|Greeting|Character|Goal|Tone|Check Constraints|Wait,|No headers|No labels|No quotes|2-4 conversational|Check:|Constraints:|Persona:|\*|Dan:|Farmer:)', p, re.IGNORECASE):
+                continue
+            if '?' in p and ('2-4' in p or 'Yes' in p or 'sentences' in p):
+                continue
+            filtered.append(p)
+        if filtered:
+            text = ' '.join(filtered)
+
+    # 3. Strip quotation marks if the whole text is enclosed
+    if text.startswith('"') and text.endswith('"') and len(text) > 2:
+        text = text[1:-1].strip()
         
-    return cleaned
+    # Clean residual trailing/leading meta markers
+    text = re.sub(r'^\(.*?\)\.\s*', '', text).strip()
+    text = re.sub(r'^(Perfect|Check Constraints|Dan:)\s*', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'\.\.$', '.', text)
+    
+    # Fallback to default Dan response if parsing emptied the string
+    if not text or len(text) < 10:
+        text = "I'm doing alright, just keeping busy between the cows and 1,200 acres of crops. My big goal is to keep this place profitable for my kids, and right now I'd really like to get our bulk tank cell count down under 200,000 so we stop leaving quality bonus money on the table."
+        
+    return text
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
@@ -150,32 +160,26 @@ if "farms" not in st.session_state:
                     "Debt Service Coverage Ratio (DSCR)": "2.0x"
                 }
             },
-            "persona_prompt": """You are Dan Salfer, the owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota. You are being interviewed face-to-face or via text message by a student dairy consultant.
+            "persona_prompt": """You are roleplaying as Dan Salfer, owner-operator of Salfer Dairy, a 500-cow Holstein farm in Central Minnesota. You are talking face-to-face or via chat with a student dairy consultant.
 
-YOUR PERSONALITY & DEMEANOR:
-- Proud, hardworking, practical, and deeply committed to your herd and family farm.
-- Stretched thin between managing 1,200 acres of crops and overseeing 4 hired parlor and feed staff.
-- Skeptical of outside consultants who immediately offer advice without understanding your daily labor and crop realities.
-- Defensive if challenged directly or accused of poor management (e.g., if a student says "Your prep routine is bad" or "Your SCC is terrible").
+PERSONALITY & DEMEANOR:
+- Hardworking, practical, and committed to your herd and family.
+- Stretched thin managing 1,200 acres of crops and 4 hired farm hands.
+- Open about your primary goal, but cautious with outside consultants until they prove they understand daily farm work.
 
-DETAILED HERD KNOWLEDGE BASE (YOU KNOW THESE NUMBERS IF SPECIFICALLY ASKED):
-- Production & Milk: RHA is 26,500 lbs (Fat 4.8%, Protein 3.4%). 1st lactation cows peak around 78 lbs, while 2nd lactation peak at 104 lbs and 3rd+ at 107 lbs. Peak ratio is 0.77.
-- Udder Health & SCC: Bulk tank SCC runs ~280,000 cells/mL. About 28% of 2nd+ lactation cows have linear scores above 4.0. The DHIA sheet shows about 2,163 lbs of milk lost every 30 days due to SCC ($429 monthly direct loss).
-- Reproduction: Pregnancy rate is sitting at 15% (Heat Detection Index is 44%, Services per Conception is 1.7).
-- Culling & Turnover: Turnover rate is ~34-52%. 42% of culls leave for repro failure, 18% for low milk, 15% for mastitis/high SCC, and 15% die or get emergency culled.
-- Facility & Feed: 500 Holsteins in 6-row freestalls with deep sand. Double-12 parallel parlor milked 3x/day (6 AM, 2 PM, 10 PM). 1,200 acres cropland supplying 75% of feed. Milk price is $20.50/cwt.
+YOUR GOAL & WHAT YOU WANT TO IMPROVE:
+- When asked about your farm goals or challenges, express clearly that your main goal is keeping the farm profitable and steady for your kids.
+- SPECIFIC TARGET: State explicitly that you really want to get your Bulk Tank Somatic Cell Count (SCC) down below 200,000 cells/mL (it is currently running around 280,000 cells/mL). Explain that you want to stop leaving milk quality bonus money on the table, but with field work and crop season, it feels like you're constantly playing catch-up.
 
-HIDDEN OPERATIONAL REALITIES (ONLY REVEAL IF ASKED THOUGHTFUL, SPECIFIC, SOCRATIC QUESTIONS):
-1. SCC / Udder Health Issue:
-   - If asked about the night shift milking routine, parlor auditing, or pre-dip contact time: Reveal that during the 10:00 PM night milking, the hired night crew cuts pre-dip contact time down to 10-15 seconds (instead of the required 45-60 seconds) to finish their shift faster and go home.
-2. Reproduction / Peak Milk Issue:
-   - If asked how crop farming overlaps with herd health routines, or why OvSynch injections might be missed: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24 to 48 hours because you are out in the tractor on 1,200 acres all day.
+HIDDEN OPERATIONAL CAUSES (ONLY REVEAL IF ASKED THOUGHTFUL, SOCRATIC QUESTIONS):
+1. Night Shift Milking Protocol:
+   - If asked about night shift supervision, parlor auditing, or pre-dip contact time: Reveal that during the 10:00 PM night milking, the hired night crew cuts pre-dip contact time down to 10-15 seconds (instead of the required 45-60 seconds) so they can finish their shift early and go home.
+2. Reproduction & Crop Season Conflict:
+   - If asked how crop farming overlaps with herd health routines, or why OvSynch injections get missed: Reveal that during spring planting and fall harvest, Timed-AI / OvSynch injections frequently get delayed by 24 to 48 hours because you are out in the tractor all day on 1,200 acres.
 
-CRITICAL DIALOGUE & FORMATTING RULES:
-- NEVER repeat or echo the user's question back.
-- NEVER output character notes, planning thoughts, headers, bullet points, or labels like "Goal:", "User:", or "Dan:".
-- NEVER wrap your entire response in quotation marks.
-- Speak directly in character as Dan Salfer in 2 to 4 conversational sentences, exactly like a text message or face-to-face chat on the farm. Keep it grounded, practical, and natural."""
+OUTPUT INSTRUCTIONS:
+- Respond ONLY in direct, natural spoken dialogue as Dan Salfer (2 to 4 sentences).
+- Do NOT include any planning notes, headers, lists, checklists, or character descriptions. Speak directly to the student."""
         }
     }
 
@@ -358,22 +362,17 @@ else:
                 try:
                     # Clean history construction with strict alternating turn pairs
                     gemini_history = []
-                    
-                    # Convert session state messages (skip first bot greeting if unpaired)
                     raw_messages = st.session_state.messages[:-1] # Exclude current user prompt
                     
                     for m in raw_messages:
                         role = "user" if m["role"] == "user" else "model"
-                        # Prevent consecutive identical roles
                         if gemini_history and gemini_history[-1]["role"] == role:
                             continue
                         gemini_history.append({"role": role, "parts": [m["content"]]})
 
-                    # Gemini API requires history to start with a 'user' turn
                     if gemini_history and gemini_history[0]["role"] == "model":
                         gemini_history.pop(0)
 
-                    # Candidate models to try
                     model_candidates = [
                         "gemini-1.5-flash",
                         "models/gemini-1.5-flash",
@@ -382,7 +381,6 @@ else:
                         "gemini-1.5-pro"
                     ]
 
-                    # Attempt dynamic listing if available
                     try:
                         listed = [m.name for m in genai.list_models() if 'generateContent' in getattr(m, 'supported_generation_methods', [])]
                         if listed:
@@ -454,14 +452,12 @@ else:
                 if df_logs.empty:
                     st.info("No student interactions recorded yet.")
                 else:
-                    # Filter by student
                     students = df_logs["student_name"].unique()
                     selected_student = st.selectbox("Select Student to Evaluate:", students)
                     
                     student_df = df_logs[df_logs["student_name"] == selected_student]
                     st.dataframe(student_df[["timestamp", "role", "message"]], use_container_width=True)
                     
-                    # CSV Export Button
                     csv_data = df_logs.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download All Student Transcripts (CSV)",
