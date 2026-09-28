@@ -56,13 +56,10 @@ def sanitize_bot_reply(reply_text, user_prompt=""):
     
     cleaned = reply_text.strip()
     
-    # Strip out common internal reasoning / planning blocks
-    cleaned = re.sub(r'^(User|Student|Question|Goal|Salfer|Farmer|Context|Instructions?|Persona):.*?
-', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    cleaned = re.sub(r'^\*.*?\*
-?', '', cleaned)
-    cleaned = re.sub(r'^(Goal|Salfer is|He manages|He's skeptical|Focus on):.*?
-?', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    # Strip out common internal reasoning / planning blocks safely
+    cleaned = re.sub(r'^(User|Student|Question|Goal|Salfer|Farmer|Context|Instructions?|Persona):.*?\n', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r'^\*.*?\*\n?', '', cleaned)
+    cleaned = re.sub(r"^(Goal|Salfer is|He manages|He's skeptical|Focus on):.*?\n?", '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     
     # Remove leading/trailing quotation marks if whole message is wrapped
     if cleaned.startswith('"') and cleaned.endswith('"') and len(cleaned) > 2:
