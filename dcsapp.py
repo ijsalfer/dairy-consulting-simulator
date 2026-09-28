@@ -35,19 +35,36 @@ def init_db():
         )
     ''')
     conn.commit()
-    conn.close()
+    
+    # Auto-migrate existing database tables created under previous schemas
+    try:
+        c.execute('PRAGMA table_info(transcripts)')
+        existing_cols = [row[1] for row in c.fetchall()]
+        if 'course' not in existing_cols:
+            c.execute('ALTER TABLE transcripts ADD COLUMN course TEXT DEFAULT "ANSC 4604"')
+            conn.commit()
+        if 'semester' not in existing_cols:
+            c.execute('ALTER TABLE transcripts ADD COLUMN semester TEXT DEFAULT "Spring 2027"')
+            conn.commit()
+    except Exception as err:
+        print(f"Database migration note: {err}")
+    finally:
+        conn.close()
 
 init_db()
 
 def log_message(student_name, student_id, course, semester, farm_name, role, message):
-    conn = sqlite3.connect('transcripts.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO transcripts (student_name, student_id, course, semester, farm_name, timestamp, role, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (student_name, student_id, course, semester, farm_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, message))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('transcripts.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO transcripts (student_name, student_id, course, semester, farm_name, timestamp, role, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (student_name, student_id, course, semester, farm_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, message))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Transcript logging exception caught: {e}")
 
 def get_transcripts():
     conn = sqlite3.connect('transcripts.db', check_same_thread=False)
