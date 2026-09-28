@@ -111,25 +111,12 @@ def configure_gemini_api(key_or_token):
     if not key_or_token:
         return False
     k = key_or_token.strip()
-    if k.startswith("AQ.") or k.startswith("ya29."):
-        try:
-            import google.oauth2.credentials
-            creds = google.oauth2.credentials.Credentials(token=k)
-            genai.configure(credentials=creds)
-            return True
-        except Exception as e:
-            print(f"OAuth credentials setup error: {e}")
     try:
         genai.configure(api_key=k)
         return True
     except Exception as e:
-        try:
-            import google.oauth2.credentials
-            creds = google.oauth2.credentials.Credentials(token=k)
-            genai.configure(credentials=creds)
-            return True
-        except Exception:
-            return False
+        print(f"API key configuration error: {e}")
+        return False
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
