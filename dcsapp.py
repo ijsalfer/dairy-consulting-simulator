@@ -111,11 +111,19 @@ def configure_gemini_api(key_or_token):
     if not key_or_token:
         return False
     k = key_or_token.strip()
+    
+    # Clear previous client state on Streamlit reruns
+    try:
+        if hasattr(genai, 'src') and hasattr(genai.src, 'client'):
+            genai.src.client._CLIENTS.clear()
+    except Exception:
+        pass
+
     if k.startswith("AQ.") or k.startswith("ya29."):
         try:
             import google.oauth2.credentials
             creds = google.oauth2.credentials.Credentials(token=k)
-            genai.configure(credentials=creds, api_key=None)
+            genai.configure(credentials=creds)
             return True
         except Exception as e:
             print(f"OAuth configuration note: {e}")
@@ -133,7 +141,7 @@ def configure_gemini_api(key_or_token):
             try:
                 import google.oauth2.credentials
                 creds = google.oauth2.credentials.Credentials(token=k)
-                genai.configure(credentials=creds, api_key=None)
+                genai.configure(credentials=creds)
                 return True
             except Exception:
                 return False
