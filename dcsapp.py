@@ -111,8 +111,9 @@ def configure_gemini_api(key_or_token):
     if not key_or_token:
         return False
     k = key_or_token.strip()
+    import os
     
-    # Clear previous client state on Streamlit reruns
+    # Reset any cached clients in google.generativeai
     try:
         if hasattr(genai, 'src') and hasattr(genai.src, 'client'):
             genai.src.client._CLIENTS.clear()
@@ -120,6 +121,9 @@ def configure_gemini_api(key_or_token):
         pass
 
     if k.startswith("AQ.") or k.startswith("ya29."):
+        # Crucial fix: Remove GEMINI_API_KEY from environment so genai.configure
+        # does NOT auto-populate api_key from environment alongside credentials
+        os.environ.pop("GEMINI_API_KEY", None)
         try:
             import google.oauth2.credentials
             creds = google.oauth2.credentials.Credentials(token=k)
@@ -127,24 +131,20 @@ def configure_gemini_api(key_or_token):
             return True
         except Exception as e:
             print(f"OAuth configuration note: {e}")
+            os.environ["GEMINI_API_KEY"] = k
             try:
                 genai.configure(api_key=k)
                 return True
             except Exception:
                 return False
     else:
+        os.environ["GEMINI_API_KEY"] = k
         try:
             genai.configure(api_key=k)
             return True
         except Exception as e:
             print(f"API key configuration note: {e}")
-            try:
-                import google.oauth2.credentials
-                creds = google.oauth2.credentials.Credentials(token=k)
-                genai.configure(credentials=creds)
-                return True
-            except Exception:
-                return False
+            return False
 
 # --- DEFAULT SCENARIO DATA ---
 if "farms" not in st.session_state:
